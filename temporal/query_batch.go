@@ -13,7 +13,7 @@ import (
 // copyEntries appends the records named by keys to dst.
 func (s *Series[T]) copyEntries(dst []Entry[T], keys []timeKey) []Entry[T] {
 	base := len(dst)
-	dst = slices.Grow(dst, len(keys))[:base+len(keys)]
+	dst = growEntries(dst, len(keys))
 	for i, k := range keys {
 		s.copyOut(&dst[base+i], k.seq)
 	}

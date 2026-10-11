@@ -64,7 +64,15 @@ func (s *Series[T]) checkInvariantsLocked() error {
 			return fmt.Errorf("seq %d has reserved flag bits %#x", seq, m.flags)
 		}
 	}
-	return s.checkTimeIndexLocked()
+	if err := s.checkTimeIndexLocked(); err != nil {
+		return err
+	}
+	for _, ix := range s.idx {
+		if err := ix.checkLocked(); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // checkTimeIndexLocked verifies that the time index holds exactly one key per

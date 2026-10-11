@@ -31,6 +31,13 @@ func (s *Series[T]) copyOut(dst *Entry[T], seq Seq) {
 	dst.Value = *v
 }
 
+// growEntries extends dst by n zero entries, reallocating only if cap(dst) is
+// insufficient.
+func growEntries[T any](dst []Entry[T], n int) []Entry[T] {
+	base := len(dst)
+	return slices.Grow(dst, n)[:base+n]
+}
+
 // effectiveLimit is min(limit, MaxReadBatch); limit <= 0 means MaxReadBatch.
 func (s *Series[T]) effectiveLimit(limit int) int {
 	if limit <= 0 || limit > s.cfg.maxReadBatch {
@@ -109,7 +116,7 @@ func (s *Series[T]) ReadFrom(dst []Entry[T], from Ref, limit int) ([]Entry[T], R
 	avail := int(s.b.newest - start + 1)
 	n := min(avail, s.effectiveLimit(limit))
 	base := len(dst)
-	dst = slices.Grow(dst, n)[:base+n]
+	dst = growEntries(dst, n)
 	for i := range n {
 		s.copyOut(&dst[base+i], start+Seq(i))
 	}

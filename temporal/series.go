@@ -1,6 +1,7 @@
 package temporal
 
 import (
+	"fmt"
 	"math"
 	"runtime/debug"
 	"sync"
@@ -51,6 +52,7 @@ type Series[T any] struct {
 	cfg  config[T]
 	ring ring[T]
 	time timeIndex // nil when TimeIndexNone
+	idx  []Index[T]
 	b    bounds
 	gen  Gen
 	id   uint64
@@ -59,6 +61,7 @@ type Series[T any] struct {
 	keyScratch []timeKey // index query results, cap MaxReadBatch+1
 	delKeys    []timeKey // commit-phase evictions
 	insKeys    []timeKey // commit-phase insertions
+	xe         Entry[T]  // the entry handed to extractors; zeroed after use
 
 	env         envelope
 	hasObserved bool
@@ -75,6 +78,14 @@ func New[T any](cfg Config[T]) (*Series[T], error) {
 	if err != nil {
 		return nil, err
 	}
+	// Check every handle before binding any, so a failure binds nothing (K-003).
+	bindMu.Lock()
+	defer bindMu.Unlock()
+	for _, ix := range c.indexes {
+		if ix.isBound() {
+			return nil, fmt.Errorf("%w: index %q", ErrIndexBound, ix.indexName())
+		}
+	}
 	s := &Series[T]{
 		cfg:       c,
 		ring:      newRing[T](c.capacity),
@@ -87,6 +98,10 @@ func New[T any](cfg Config[T]) (*Series[T], error) {
 		s.keyScratch = make([]timeKey, 0, c.maxReadBatch+1)
 		s.delKeys = make([]timeKey, 0, 1)
 		s.insKeys = make([]timeKey, 0, 1)
+	}
+	s.idx = append([]Index[T](nil), c.indexes...)
+	for _, ix := range s.idx {
+		ix.bind(s, c.capacity)
 	}
 	return s, nil
 }
@@ -101,7 +116,7 @@ func (s *Series[T]) Append(v T, m InputMeta) (AppendResult, error) {
 	}
 	res, err := s.appendLocked(&v, &m)
 	s.mu.Unlock()
-	if err == nil {
+	if err == nil && res.Outcome == OutcomeAppended {
 		s.notify()
 	}
 	return res, err
@@ -109,11 +124,15 @@ func (s *Series[T]) Append(v T, m InputMeta) (AppendResult, error) {
 
 // itemPlan is the outcome of the prepare phase for one item.
 type itemPlan struct {
-	flags Flags // series-set flags to apply
+	flags       Flags // series-set flags to apply
+	drop        bool  // a ConflictDrop index already maps the key
+	existing    Seq   // holder reported in AppendResult.Existing
+	existingIdx int   // index that produced existing, or -1
 }
 
 func (s *Series[T]) appendLocked(v *T, m *InputMeta) (AppendResult, error) {
-	p, err := s.prepareMeta(m, s.maxObserved, s.hasObserved, &s.srcSeq, s.b.nextSeq())
+	next := s.b.nextSeq()
+	p, err := s.prepareMeta(m, s.maxObserved, s.hasObserved, &s.srcSeq, next)
 	if err != nil {
 		s.n.rejected++
 		return AppendResult{}, err
@@ -126,9 +145,77 @@ func (s *Series[T]) appendLocked(v *T, m *InputMeta) (AppendResult, error) {
 		}
 		v = &c
 	}
-	res := s.commit(v, m, p)
+	if len(s.idx) > 0 {
+		evictBelow := s.b.oldest
+		if s.b.len() == s.cfg.capacity {
+			evictBelow++
+		}
+		if err := s.prepareIndexes(v, m, &p, next, evictBelow, 0); err != nil {
+			s.n.rejected++
+			return AppendResult{}, err
+		}
+		if p.drop {
+			return s.commitDrop(&p, 0), nil
+		}
+	}
+	res := s.commit(v, m, p, 0)
 	s.applyTime()
 	return res, nil
+}
+
+// prepareIndexes runs P-03 step 6 for the item at batch position pos: each
+// index in Config.Indexes order extracts the key and checks conflicts. Any
+// error fails the item; otherwise any Drop drops it (Drop wins, §10.3).
+func (s *Series[T]) prepareIndexes(v *T, m *InputMeta, p *itemPlan, seq, evictBelow Seq, pos int) error {
+	e := &s.xe
+	e.Value = *v
+	e.Meta = Meta{
+		EventTime:   m.EventTime,
+		ReceiveTime: m.ReceiveTime,
+		SourceSeq:   m.SourceSeq,
+		SourceEpoch: m.SourceEpoch,
+		Flags:       m.Flags | p.flags,
+		Ref:         Ref{Gen: s.gen, Seq: seq},
+	}
+	defer func() { s.xe = Entry[T]{} }()
+
+	p.existingIdx = -1
+	firstDrop := -1
+	var dropHolder Seq
+	for i, ix := range s.idx {
+		d, err := ix.prepare(e, evictBelow, pos)
+		if err != nil {
+			return err
+		}
+		switch d.kind {
+		case decDrop:
+			if firstDrop < 0 {
+				firstDrop, dropHolder = i, d.existing
+			}
+		case decReplace, decKeepFirst:
+			if p.existingIdx < 0 {
+				p.existingIdx, p.existing = i, d.existing
+			}
+		}
+	}
+	if firstDrop >= 0 {
+		p.drop, p.existingIdx, p.existing = true, firstDrop, dropHolder
+	}
+	return nil
+}
+
+// commitDrop records a dropped item: no Seq is consumed and no index changes.
+func (s *Series[T]) commitDrop(p *itemPlan, pos int) AppendResult {
+	s.n.dropped++
+	for _, ix := range s.idx {
+		ix.noteDropped(pos)
+	}
+	return AppendResult{
+		Outcome:  OutcomeDropped,
+		Flags:    p.flags,
+		Existing: Ref{Gen: s.gen, Seq: p.existing},
+		Index:    s.idx[p.existingIdx].indexName(),
+	}
 }
 
 // applyTime hands the transaction's evicted and inserted keys to the time
@@ -151,7 +238,7 @@ func (s *Series[T]) prepareMeta(
 	trk *sourceSeqTracker,
 	next Seq,
 ) (itemPlan, error) {
-	var p itemPlan
+	p := itemPlan{existingIdx: -1}
 	if m.EventTime == MinTimestamp || m.EventTime == MaxTimestamp {
 		return p, errInvalidEventTime
 	}
@@ -186,11 +273,19 @@ func lateThreshold(maxObserved, tolerance Timestamp) Timestamp {
 }
 
 // commit applies one prepared item. It must not call user code.
-func (s *Series[T]) commit(v *T, m *InputMeta, p itemPlan) AppendResult {
+func (s *Series[T]) commit(v *T, m *InputMeta, p itemPlan, pos int) AppendResult {
 	seq := s.b.nextSeq()
 	res := AppendResult{Outcome: OutcomeAppended, Ref: Ref{Gen: s.gen, Seq: seq}, Flags: p.flags}
+	if p.existingIdx >= 0 {
+		res.Existing = Ref{Gen: s.gen, Seq: p.existing}
+		res.Index = s.idx[p.existingIdx].indexName()
+	}
 
 	if evicted, ok := s.b.push(s.cfg.capacity); ok {
+		slot := s.ring.slot(evicted)
+		for _, ix := range s.idx {
+			ix.evict(slot, evicted)
+		}
 		et := s.ring.eventTime(evicted)
 		if s.time != nil {
 			s.delKeys = append(s.delKeys, timeKey{eventTime: et, seq: evicted})
@@ -210,6 +305,12 @@ func (s *Series[T]) commit(v *T, m *InputMeta, p itemPlan) AppendResult {
 	})
 	if s.time != nil {
 		s.insKeys = append(s.insKeys, timeKey{eventTime: m.EventTime, seq: seq})
+	}
+	if len(s.idx) > 0 {
+		slot := s.ring.slot(seq)
+		for _, ix := range s.idx {
+			ix.commit(slot, seq, pos)
+		}
 	}
 
 	if !s.hasObserved || m.EventTime > s.maxObserved {
@@ -270,6 +371,9 @@ func (s *Series[T]) Clear() error {
 	s.ring.zero()
 	if s.time != nil {
 		s.time.Clear()
+	}
+	for _, ix := range s.idx {
+		ix.reset()
 	}
 	s.b.reset()
 	s.env = envelope{}

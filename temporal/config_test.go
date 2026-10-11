@@ -6,11 +6,10 @@ import (
 	"time"
 )
 
-// namedIndex is a minimal Index used to exercise name validation before the
-// real key indexes exist.
-type namedIndex[T any] struct{ name string }
-
-func (ix *namedIndex[T]) indexName() string { return ix.name }
+// namedIndex returns a unique index with the given name.
+func namedIndex(name string) Index[int] {
+	return NewUniqueIndex(name, func(e *Entry[int]) (int, bool) { return e.Value, true }, ConflictReject)
+}
 
 // §12.1: New returns ErrInvalidConfig for every malformed config.
 func TestConfig_ValidateInvalid(t *testing.T) {
@@ -27,9 +26,18 @@ func TestConfig_ValidateInvalid(t *testing.T) {
 		{"unknown SourceSeqPolicy", Config[int]{Capacity: 1, SourceSeqPolicy: SourceSeqReject + 1}},
 		{"negative LateTolerance", Config[int]{Capacity: 1, LateTolerance: -time.Nanosecond}},
 		{"duplicate index names", Config[int]{Capacity: 1, Indexes: []Index[int]{
-			&namedIndex[int]{"a"}, &namedIndex[int]{"b"}, &namedIndex[int]{"a"},
+			namedIndex("a"), namedIndex("b"), namedIndex("a"),
 		}}},
 		{"nil index", Config[int]{Capacity: 1, Indexes: []Index[int]{nil}}},
+		{"unknown ConflictPolicy", Config[int]{Capacity: 1, Indexes: []Index[int]{
+			NewUniqueIndex("u", func(e *Entry[int]) (int, bool) { return 0, true }, ConflictKeepFirst+1),
+		}}},
+		{"nil unique extractor", Config[int]{Capacity: 1, Indexes: []Index[int]{
+			NewUniqueIndex[int, int]("u", nil, ConflictReject),
+		}}},
+		{"nil multi extractor", Config[int]{Capacity: 1, Indexes: []Index[int]{
+			NewMultiIndex[int, int]("m", nil),
+		}}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -67,7 +75,7 @@ func TestConfig_ValidateNormalizes(t *testing.T) {
 			LateTolerance:        2 * time.Millisecond,
 			SourceSeqPolicy:      SourceSeqFlag,
 			GateReadsByWatermark: true,
-			Indexes:              []Index[int]{&namedIndex[int]{"a"}, &namedIndex[int]{"b"}},
+			Indexes:              []Index[int]{namedIndex("a"), namedIndex("b")},
 		}).validate()
 		if err != nil {
 			t.Fatal(err)

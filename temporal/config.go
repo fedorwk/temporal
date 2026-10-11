@@ -161,6 +161,9 @@ func (c *Config[T]) validate() (config[T], error) {
 		if _, dup := seen[name]; dup {
 			return config[T]{}, fmt.Errorf("%w: duplicate index name %q", ErrInvalidConfig, name)
 		}
+		if err := ix.validate(); err != nil {
+			return config[T]{}, err
+		}
 		seen[name] = struct{}{}
 	}
 

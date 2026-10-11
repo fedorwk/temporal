@@ -11,7 +11,8 @@ Plan: `IMPLEMENTATION_PLAN.md`. Spec: `temporal_series_requirements.md`. Decisio
 | 3 Event-time ordering capability | done |
 | 4 Event-time point queries, status precedence, watermark gating | done |
 | 5 Batch time reads, TimeCursor pagination, Entries | done |
-| 6 Key indexes (single-record Append) | next |
+| 6 Key indexes (single-record Append) | done |
+| 7 AppendBatch | next |
 
 ## Session 1 — Foundations and ring
 
@@ -146,3 +147,27 @@ Tests per requirement:
 Open questions: none.
 
 Known gaps: none for S5 scope.
+
+## Session 6 — Key indexes (single-record Append)
+
+Done:
+- `key_index.go`: `Extractor`, full `Index[T]` interface (S6-01), `decision`, `bitset`, shared `keyCore` (per-slot keys + indexed bits, per-position scratch, panic-recovering `extract`), `UniqueIndex` (map, all four policies, pending overlay for S7, K-008 eviction, `Get`/`Contains`/`Len`, `checkLocked`), `MultiIndex` (postings FIFO with compaction and free list, `Get`/`Latest`/`Count`/`Keys`, `checkLocked`).
+- Series: binding in `New` (S6-02), prepare step 6 with Drop-wins/Reject-fails (`prepareIndexes`, `commitDrop`), commit order evict → ring write → index commit, `Clear` resets indexes, `Stats.Indexes`, `CheckInvariants` runs §14.1 checks per index.
+- Model: `model_index_test.go` with per-record (key, ok, indexed) state and linear-scan lookups; random runs register 0-2 indexes (unique with random policy or multi; value-period keys that often equal the evicted row's key; EventTime keys; a panicking extractor) and compare append results, typed errors, Stats.Indexes and every lookup. Coverage guard asserts drops, Replace/KeepFirst, conflicts and extractor panics all occur.
+
+Tests per requirement:
+- T-011 (single append), K-007, E-011: `TestUniqueIndex_Policies`, `TestUniqueIndex_MultipleIndexes` (Drop beats Replace/KeepFirst; Reject beats Drop; dropped item modifies no index)
+- T-012, E-012: `TestUniqueIndex_KeyOfEvictedRow` (capacity 1 and full ring)
+- T-013, K-008: `TestUniqueIndex_EvictionKeepsNewerMapping`
+- T-014, E-007: `TestIndex_ExtractorPanicNoStateChange`
+- K-005: `TestIndex_ExtractorSeesPreparedEntry`
+- Q-010, K-009, §10.4: `TestMultiIndex_Lookups` (orders, limits, compaction under churn, Clear)
+- K-003: `TestIndex_Binding`
+- K-011, Q-017: `TestIndex_ModeIndependence`
+- §12.1: `TestConfig_ValidateInvalid` (unknown policy, nil extractors)
+- T-026 (part), W-009: `TestAllocs_KeyIndexes` (lookups 0 allocs; Append with unique+multi index measured 0 in steady state)
+- T-002, T-010: `TestModel_SeqPath` (indexes in both modes; invariants after every op). Mutation checks: the E-012 `evictBelow` boundary and "Drop wins" each fail targeted tests and the model; removing the K-008 guard is an equivalent mutant (S6-08).
+
+Open questions: none.
+
+Known gaps: none for S6 scope. Batch staging (`beginBatch`/`stage`/`endBatch`) is implemented but first exercised in S7.

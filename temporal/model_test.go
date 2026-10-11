@@ -29,6 +29,8 @@ type model struct {
 
 	gen     Gen
 	recs    []Entry[int] // retained, ascending Seq
+	slots   [][]islot    // per retained record, per index
+	idx     []*modelIndex
 	nextSeq Seq
 
 	evicted          bool
@@ -103,10 +105,60 @@ func (m *model) append(v int, in InputMeta) (AppendResult, error) {
 		return AppendResult{}, ErrSeqExhausted
 	}
 
-	res := AppendResult{Ref: Ref{Gen: m.gen, Seq: m.nextSeq}, Flags: flags}
-	if len(m.recs) == m.capacity {
+	all := in.Flags | flags
+	entry := Entry[int]{Value: v, Meta: Meta{
+		EventTime:   in.EventTime,
+		ReceiveTime: in.ReceiveTime,
+		SourceSeq:   in.SourceSeq,
+		SourceEpoch: in.SourceEpoch,
+		Flags:       all,
+		Ref:         Ref{Gen: m.gen, Seq: m.nextSeq},
+	}}
+	evicting := len(m.recs) == m.capacity
+	ds, err := m.decideIndexes(&entry, evicting)
+	if err != nil {
+		m.rejected++
+		return AppendResult{}, err
+	}
+	res := AppendResult{Ref: entry.Meta.Ref, Flags: flags}
+	for i, d := range ds {
+		if d.kind == decDrop {
+			// Drop wins: nothing changes except the drop counters (P-03).
+			m.dropped++
+			for j, d2 := range ds {
+				if d2.kind == decDrop {
+					m.idx[j].dropped++
+				}
+			}
+			return AppendResult{Outcome: OutcomeDropped, Flags: flags,
+				Existing: m.recs[d.holder].Meta.Ref, Index: m.idx[i].name}, nil
+		}
+	}
+	for i, d := range ds {
+		if d.kind == decReplace || d.kind == decKeepFirst {
+			res.Existing, res.Index = m.recs[d.holder].Meta.Ref, m.idx[i].name
+			break
+		}
+	}
+	// Apply index decisions against positions before the eviction shifts them.
+	row := make([]islot, len(ds))
+	for i, d := range ds {
+		row[i] = d.slot
+		switch d.kind {
+		case decInsert:
+			row[i].indexed = true
+		case decReplace:
+			m.slots[d.holder][i].indexed = false
+			row[i].indexed = true
+			m.idx[i].replaced++
+		case decKeepFirst:
+			m.idx[i].keptFirst++
+		}
+	}
+	if evicting {
 		old := m.recs[0]
 		m.recs = m.recs[1:]
+		m.slots = m.slots[1:]
 		res.Evicted = old.Meta.Ref
 		if !m.evicted {
 			m.evicted, m.minEvict, m.maxEvi = true, old.Meta.EventTime, old.Meta.EventTime
@@ -115,15 +167,8 @@ func (m *model) append(v int, in InputMeta) (AppendResult, error) {
 		m.maxEvi = max(m.maxEvi, old.Meta.EventTime)
 		m.evictedN++
 	}
-	all := in.Flags | flags
-	m.recs = append(m.recs, Entry[int]{Value: v, Meta: Meta{
-		EventTime:   in.EventTime,
-		ReceiveTime: in.ReceiveTime,
-		SourceSeq:   in.SourceSeq,
-		SourceEpoch: in.SourceEpoch,
-		Flags:       all,
-		Ref:         res.Ref,
-	}})
+	m.recs = append(m.recs, entry)
+	m.slots = append(m.slots, row)
 	m.nextSeq++
 	if !m.observed || in.EventTime > m.maxObserved {
 		m.observed, m.maxObserved = true, in.EventTime
@@ -578,6 +623,7 @@ func (m *model) clear() error {
 	}
 	m.gen++
 	m.recs = nil
+	m.slots = nil
 	m.nextSeq = 1
 	m.evicted, m.minEvict, m.maxEvi = false, 0, 0
 	m.observed, m.maxObserved = false, 0
@@ -617,6 +663,7 @@ func (m *model) stats() Stats {
 		MinEvicted:           m.minEvict,
 		MaxEvicted:           m.maxEvi,
 		Watermark:            m.watermark,
+		Indexes:              m.indexStats(),
 	}
 	if m.observed {
 		st.MaxObservedEventTime = m.maxObserved
@@ -865,6 +912,7 @@ func TestModel_SeqPath(t *testing.T) {
 			if mode == TimeIndexNone {
 				wantBatch = []string{"TimeIndexDisabled"}
 			}
+			wantBatch = append(wantBatch, "dropped", "replaced/keptFirst", "conflict", "extractor panic")
 			for _, k := range wantBatch {
 				if batchSeen[k] == 0 && iters(200) >= 50 {
 					t.Errorf("batch reads never produced %q (seen %v)", k, batchSeen)
@@ -887,8 +935,9 @@ func TestModel_SeqPath(t *testing.T) {
 func runSeqModel(t *testing.T, r *rand.Rand, mode TimeIndexMode, run int, seen map[Status]int, batchSeen map[string]int) {
 	t.Helper()
 	cfg := randomConfig(r, mode)
-	s := mustNew(t, cfg)
 	m := newModel(cfg)
+	handles := randomIndexes(r, &cfg, m)
+	s := mustNew(t, cfg)
 	m.sid = s.id
 	var cursors []TimeCursor // every cursor returned so far, including stale ones
 	g := &inputGen{r: r, now: Timestamp(r.IntN(1000))}
@@ -906,15 +955,29 @@ func runSeqModel(t *testing.T, r *rand.Rand, mode TimeIndexMode, run int, seen m
 			v, in := g.nextValue(), g.meta()
 			got, gotErr := s.Append(v, in)
 			want, wantErr := m.append(v, in)
-			if !sameErr(gotErr, wantErr) || got != want {
+			if !errMatches(gotErr, wantErr) || got != want {
 				fail(step, "Append", "got (%+v, %v), want (%+v, %v) for %+v", got, gotErr, want, wantErr, in)
 			}
-		case op < 48:
+			switch {
+			case got.Outcome == OutcomeDropped:
+				batchSeen["dropped"]++
+			case got.Index != "":
+				batchSeen["replaced/keptFirst"]++
+			case errors.Is(gotErr, ErrUniqueConflict):
+				batchSeen["conflict"]++
+			case errors.Is(gotErr, ErrCallbackPanic):
+				batchSeen["extractor panic"]++
+			}
+		case op < 45:
 			ref := randomRef(r, m)
 			got, gotSt := s.Get(ref)
 			want, wantSt := m.get(ref)
 			if got != want || gotSt != wantSt {
 				fail(step, "Get", "ref %+v: got (%+v, %v), want (%+v, %v)", ref, got, gotSt, want, wantSt)
+			}
+		case op < 49:
+			if name, msg := runIndexLookup(r, m, handles); name != "" {
+				fail(step, name, "%s", msg)
 			}
 		case op < 51:
 			got, gotSt := s.Latest()

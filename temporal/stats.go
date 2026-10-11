@@ -68,6 +68,12 @@ func (s *Series[T]) Stats() Stats {
 	if s.hasObserved {
 		st.MaxObservedEventTime = s.maxObserved
 	}
+	if len(s.idx) > 0 {
+		st.Indexes = make([]IndexStats, len(s.idx))
+		for i, ix := range s.idx {
+			st.Indexes[i] = ix.stats()
+		}
+	}
 	if s.time != nil {
 		if k, ok := s.time.Min(); ok {
 			st.MinEventTime = k.eventTime
