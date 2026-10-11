@@ -14,7 +14,8 @@ Plan: `IMPLEMENTATION_PLAN.md`. Spec: `temporal_series_requirements.md`. Decisio
 | 6 Key indexes (single-record Append) | done |
 | 7 AppendBatch | done |
 | 8 Subscriptions | done |
-| 9 Derived series and watermark propagation | next |
+| 9 Derived series and watermark propagation | done |
+| 10 Verification hardening | next |
 
 ## Session 1 — Foundations and ring
 
@@ -224,3 +225,24 @@ Tests per requirement:
 Open questions: none.
 
 Known gaps: subscriptions are not yet part of the random model test; S10's fuzz target adds Subscribe/TryNext/Seek.
+
+## Session 9 — Derived series and watermark propagation
+
+Done:
+- `derive.go`: `DeriveFunc`, `DeriveOptions`, `WatermarkMode`, `DeriverState`, `DeriverStatus`, `Deriver` (`Status`, `Checkpoint`, `Stop`, `Done`, `Err`), `StartDerived`; worker loop: snapshot read → derive outside locks (panics recovered) → one AppendBatch → advance processed cursor → WatermarkPropagate when the batch reached the source's newest record → lag metrics.
+- `subscription.go`: unset `StartFrom` default (S9-01); internal `next` returning the P-12 snapshot.
+
+Tests per requirement:
+- D-001, D-003, D-007, D-008: `TestDerived_Pipeline` (all four None/BTree combinations)
+- D-004, T-020: `TestDerived_FailuresKeepCursor` (derive error, derive panic, unique Reject on append, ErrBatchTooLarge, LagFail, source Clear; each leaves the processed cursor at the last committed batch and the destination unchanged)
+- §18.4, T-020: `TestDerived_WatermarkPropagation` (only when caught up; WatermarkManual untouched)
+- D-005, D-006: `TestDerived_DeterministicAndCheckpoint` (two derivers with different batch sizes and modes produce identical destinations; a stateful derivation resumes exactly from a checkpoint)
+- D-007: `TestDerived_LagAndSourceClose` (LagRecords and LagTime; source Close → Stopped with ErrClosed)
+- §18.2: `TestDerived_ValidationAndCancel`
+- Exit gate: `go test -race -count=10 -run Derived` green (also run 30x under race and 50x plain).
+- Mutation checks: propagating the watermark when not caught up, and advancing the cursor on a failed append, are both caught.
+
+Open questions:
+- Per §17.3, watermark changes do not wake subscribers, so a deriver propagates a new source watermark only when the next source record arrives. On a quiet market (no trades for a while) a derived candle series' watermark therefore stays behind the raw series. Implemented as specified; a possible extension is to let derivers (not general subscribers) also wake on watermark changes.
+
+Known gaps: none for S9 scope.

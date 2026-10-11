@@ -10,7 +10,8 @@ import (
 type startKind uint8
 
 const (
-	startNext startKind = iota // zero value
+	startUnset startKind = iota // zero value: the caller's default
+	startNext
 	startOldest
 	startAt
 )
@@ -38,6 +39,14 @@ type SubscribeOptions struct {
 	Name  string
 	Start StartFrom // zero value = StartNext
 	OnLag LagPolicy
+}
+
+// orDefault replaces an unset start position with def.
+func (f StartFrom) orDefault(def StartFrom) StartFrom {
+	if f.kind == startUnset {
+		return def
+	}
+	return f
 }
 
 // subscriber is the notification endpoint shared with the Series.
@@ -81,7 +90,7 @@ func (s *Series[T]) Subscribe(opts SubscribeOptions) (*Subscription[T], error) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	sub.cur = s.startCursor(opts.Start)
+	sub.cur = s.startCursor(opts.Start.orDefault(StartNext()))
 	var list []*subscriber
 	if p := s.subs.Load(); p != nil {
 		list = slices.Clone(*p)
@@ -96,7 +105,7 @@ func (s *Series[T]) startCursor(from StartFrom) Cursor {
 	switch {
 	case from.kind == startAt && !from.ref.IsZero():
 		return Cursor{Gen: from.ref.Gen, Next: from.ref.Seq}
-	case from.kind == startNext || s.b.empty():
+	case from.kind == startNext || from.kind == startUnset || s.b.empty():
 		return Cursor{Gen: s.gen, Next: s.b.nextSeq()}
 	default: // StartOldest, or StartAt with the zero Ref
 		return Cursor{Gen: s.gen, Next: s.b.oldest}
@@ -209,20 +218,26 @@ func (sub *Subscription[T]) poll(dst []Entry[T], limit int) ([]Entry[T], sourceS
 // drained, ErrReset after Clear until Seek, and a *LagError (ErrLagged) if the
 // cursor fell behind retention under LagFail.
 func (sub *Subscription[T]) Next(ctx context.Context, dst []Entry[T], limit int) ([]Entry[T], error) {
+	out, _, err := sub.next(ctx, dst, limit)
+	return out, err
+}
+
+// next is Next that also returns the source snapshot of the successful read.
+func (sub *Subscription[T]) next(ctx context.Context, dst []Entry[T], limit int) ([]Entry[T], sourceSnapshot, error) {
 	for {
 		if err := ctx.Err(); err != nil {
-			return dst, err
+			return dst, sourceSnapshot{}, err
 		}
-		out, _, got, err := sub.poll(dst, limit)
+		out, snap, got, err := sub.poll(dst, limit)
 		if got || err != nil {
-			return out, err
+			return out, snap, err
 		}
 		select {
 		case <-sub.sub.wake:
 		case <-ctx.Done():
-			return dst, ctx.Err()
+			return dst, sourceSnapshot{}, ctx.Err()
 		case <-sub.sub.done:
-			return dst, ErrClosed
+			return dst, sourceSnapshot{}, ErrClosed
 		}
 	}
 }
