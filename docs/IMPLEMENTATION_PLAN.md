@@ -39,7 +39,7 @@ The spec is authoritative on semantics. This plan decides **order, file layout, 
 ```
 temporal_2/
   go.mod                         // module path: see P-01; `go 1.23`
-  temporal_series_requirements.md
+  docs/  temporal_series_requirements.md
   IMPLEMENTATION_PLAN.md
   PROGRESS.md  DECISIONS.md  BENCHMARKS.md (S11)
   scripts/check.sh  scripts/bench.sh (S11)

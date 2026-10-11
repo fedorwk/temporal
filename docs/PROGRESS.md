@@ -279,7 +279,7 @@ Done:
 - `alloc_test.go`: `TestAllocAcceptance`, the consolidated §22.2 table (T-026), all exactly zero.
 - `example_test.go`: five testable examples mirroring §25 (raw series with dedup and AsOf, statuses, Range+Continue, subscription lag handling, StartDerived).
 - `doc.go`: complete package documentation (identity, time and late events, event-time capability, statuses, watermarks, key indexes, writes, ownership and Clone, subscriptions and derivation, synchronization model, allocation).
-- `scripts/bench.sh`, `scripts/benchcmp.py`; results in `BENCHMARKS.md` and `bench/`.
+- `scripts/bench.sh`, `scripts/benchcmp.py`; results in `BENCHMARKS.md` and `../bench/`.
 
 Key results (BENCHMARKS.md): Append 25.6 ns (None) vs 95.9 ns (BTree); Q-017 confirmed (ReadFrom p=0.06, Subscription.Next p=0.43); B-tree write path ~0.066 allocs/record; 64 / 99 / 108 / 93 bytes per row for None / BTree / +unique / +multi; heap bounded under sustained ingestion; writer p99 up to ~1-2 ms under tight-loop readers (S11-03).
 
