@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""Compare TimeIndexNone vs TimeIndexBTree benchmark runs without benchstat.
+"""Compare TimeIndexMode benchmark runs without benchstat.
 
-Reads `go test -bench` output with sub-benchmarks named .../mode=None/... and
-.../mode=BTree/..., and prints a Markdown table of medians per metric plus a
-two-sided Mann-Whitney U test (normal approximation with tie correction) on
-ns/op. p < 0.05 marks a statistically significant difference.
+Reads `go test -bench` output with sub-benchmarks named .../mode=<Mode>/...
+(None, BTree, Ordered) and prints a Markdown table of medians per metric,
+each mode's delta against None, and a two-sided Mann-Whitney U test (normal
+approximation with tie correction) on ns/op against None. p < 0.05 marks a
+statistically significant difference.
 """
 import math
 import re
@@ -65,30 +66,47 @@ def mann_whitney_p(a, b):
     return math.erfc(max(z, 0) / math.sqrt(2))
 
 
+MODES = ["None", "BTree", "Ordered"]
+MODE = re.compile(r"mode=(\w+)")
+
+
 def main(path):
     runs = parse(path)
-    pairs = defaultdict(dict)
+    groups = defaultdict(dict)
     for name, metrics in runs.items():
-        if "mode=None" in name:
-            pairs[name.replace("mode=None", "mode=*")]["None"] = metrics
-        elif "mode=BTree" in name:
-            pairs[name.replace("mode=BTree", "mode=*")]["BTree"] = metrics
+        m = MODE.search(name)
+        if m and m.group(1) in MODES:
+            groups[MODE.sub("mode=*", name)][m.group(1)] = metrics
+    others = [m for m in MODES[1:] if any(m in g for g in groups.values())]
     units = ["ns/op", "records/s", "B/op", "allocs/op"]
-    print("| benchmark | metric | None | BTree | delta | p (ns/op) |")
-    print("|---|---|---:|---:|---:|---:|")
-    for key in sorted(pairs):
-        p = pairs[key]
-        if "None" not in p or "BTree" not in p:
+    head = ["benchmark", "metric", "None"] + others
+    head += [f"{m} delta" for m in others] + [f"p {m} (ns/op)" for m in others]
+    print("| " + " | ".join(head) + " |")
+    print("|---|---|" + "---:|" * (len(head) - 2))
+    for key in sorted(groups):
+        g = groups[key]
+        if "None" not in g:
             continue
-        pval = mann_whitney_p(p["None"].get("ns/op", []), p["BTree"].get("ns/op", []))
+        pvals = {m: mann_whitney_p(g["None"].get("ns/op", []), g[m].get("ns/op", [])) for m in others if m in g}
         for unit in units:
-            a, b = p["None"].get(unit), p["BTree"].get(unit)
-            if not a or not b:
+            base = g["None"].get(unit)
+            if not base:
                 continue
-            ma, mb = median(a), median(b)
-            delta = f"{(mb - ma) / ma * 100:+.1f}%" if ma else ("0" if mb == 0 else "n/a")
-            ps = f"{pval:.3f}" if unit == "ns/op" else ""
-            print(f"| {key} | {unit} | {ma:,.2f} | {mb:,.2f} | {delta} | {ps} |")
+            mb = median(base)
+            cells, deltas, ps = [], [], []
+            for m in others:
+                xs = g.get(m, {}).get(unit)
+                if not xs:
+                    cells.append("")
+                    deltas.append("")
+                    ps.append("")
+                    continue
+                mx = median(xs)
+                cells.append(f"{mx:,.2f}")
+                deltas.append(f"{(mx - mb) / mb * 100:+.1f}%" if mb else ("0" if mx == 0 else "n/a"))
+                ps.append(f"{pvals[m]:.3f}" if unit == "ns/op" else "")
+            row = [key, unit, f"{mb:,.2f}"] + cells + deltas + ps
+            print("| " + " | ".join(row) + " |")
 
 
 if __name__ == "__main__":

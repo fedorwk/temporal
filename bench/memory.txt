@@ -1,12 +1,13 @@
 === RUN   TestMemoryPerRow
-    bench_test.go:517: value type: 32-byte tick; slot metadata: 32 bytes
-    bench_test.go:525: None           64.0 bytes/row
-    bench_test.go:525: BTree          99.4 bytes/row
-    bench_test.go:525: None+unique   108.2 bytes/row
-    bench_test.go:525: None+multi     92.8 bytes/row
---- PASS: TestMemoryPerRow (0.16s)
+    bench_test.go:564: value type: 32-byte tick; slot metadata: 32 bytes
+    bench_test.go:572: None           64.0 bytes/row
+    bench_test.go:572: BTree          99.4 bytes/row
+    bench_test.go:572: Ordered        64.3 bytes/row
+    bench_test.go:572: None+unique   108.2 bytes/row
+    bench_test.go:572: None+multi     92.8 bytes/row
+--- PASS: TestMemoryPerRow (0.19s)
 === RUN   TestSustainedIngestionHeapBounded
-    bench_test.go:562: HeapInuse after warm-up 12688 KiB, peak over 2M more appends 12768 KiB
---- PASS: TestSustainedIngestionHeapBounded (0.52s)
+    bench_test.go:609: HeapInuse after warm-up 12584 KiB, peak over 2M more appends 12632 KiB
+--- PASS: TestSustainedIngestionHeapBounded (0.53s)
 PASS
-ok  	github.com/fedorwk/temporal/temporal	0.944s
+ok  	github.com/fedorwk/temporal	1.076s

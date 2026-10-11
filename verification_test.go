@@ -14,9 +14,10 @@ import (
 )
 
 // T-022, TI-010, Q-017: the same stream through a TimeIndexNone and a
-// TimeIndexBTree series yields identical AppendResults, Refs, statuses and
-// results for every Seq read, key lookup and subscription batch, and identical
-// Stats except the time-index-only fields.
+// TimeIndexBTree (or, under LateReject, TimeIndexOrdered) series yields
+// identical AppendResults, Refs, statuses and results for every Seq read, key
+// lookup and subscription batch, and identical Stats except the
+// time-index-only fields.
 func TestModeEquivalence(t *testing.T) {
 	r, _ := newRand(t)
 	type pair struct {
@@ -38,12 +39,16 @@ func TestModeEquivalence(t *testing.T) {
 			})
 			return &pair{s: s, u: u, mi: mi}
 		}
-		a, b := mk(TimeIndexNone), mk(TimeIndexBTree)
+		other := TimeIndexBTree
+		if late == LateReject && r.IntN(2) == 0 {
+			other = TimeIndexOrdered
+		}
+		a, b := mk(TimeIndexNone), mk(other)
 		g := &inputGen{r: r, now: 100}
 		check := func(step int, what string, x, y any) {
 			t.Helper()
 			if !reflect.DeepEqual(x, y) {
-				t.Fatalf("run %d step %d %s: None %+v, BTree %+v", run, step, what, x, y)
+				t.Fatalf("run %d step %d %s: None %+v, mode %d %+v", run, step, what, x, other, y)
 			}
 		}
 		for step := range 300 {
@@ -149,7 +154,7 @@ func (v checked) ok(e Meta) bool {
 func TestRaceStress_NoTornReads(t *testing.T) {
 	for _, mode := range allModes {
 		t.Run(fmt.Sprint(mode), func(t *testing.T) {
-			s := mustNew(t, Config[checked]{Capacity: 64, TimeIndex: mode, MaxReadBatch: 32})
+			s := mustNew(t, withMode(mode, Config[checked]{Capacity: 64, MaxReadBatch: 32}))
 			ops := iters(20000)
 			var stop atomic.Bool
 			var bad atomic.Value
@@ -194,7 +199,7 @@ func TestRaceStress_NoTornReads(t *testing.T) {
 						for _, e := range buf {
 							report("ReadFrom", e)
 						}
-						if mode == TimeIndexBTree {
+						if mode != TimeIndexNone {
 							ts := Timestamp(i % (ops * 2))
 							if e, st := s.AsOf(ts); st == StatusOK {
 								report("AsOf", e)

@@ -84,6 +84,9 @@ func (s *Series[T]) checkTimeIndexLocked() error {
 	if got, want := s.time.Len(), s.b.len(); got != want {
 		return fmt.Errorf("time index len %d, series len %d", got, want)
 	}
+	if x, ok := s.time.(*orderedTimeIndex); ok && x.n > 0 && x.first != s.b.oldest {
+		return fmt.Errorf("ordered time index starts at seq %d, oldest is %d", x.first, s.b.oldest)
+	}
 	const chunk = 64
 	keys := make([]timeKey, 0, chunk)
 	start := timeKey{eventTime: MinTimestamp, seq: 0}

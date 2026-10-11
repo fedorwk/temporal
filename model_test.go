@@ -926,7 +926,7 @@ func (g *inputGen) nextValue() int {
 // randomConfig draws a small-capacity config so eviction happens constantly.
 func randomConfig(r *rand.Rand, mode TimeIndexMode) Config[int] {
 	tolerances := []int64{0, 0, 3, 40, math.MaxInt64}
-	return Config[int]{
+	return withMode(mode, Config[int]{
 		Name:                 fmt.Sprintf("model-%d", r.IntN(1000)),
 		Capacity:             1 + r.IntN(8),
 		TimeIndex:            mode,
@@ -935,7 +935,7 @@ func randomConfig(r *rand.Rand, mode TimeIndexMode) Config[int] {
 		LateTolerance:        time.Duration(tolerances[r.IntN(len(tolerances))]),
 		SourceSeqPolicy:      SourceSeqPolicy(r.IntN(3)),
 		GateReadsByWatermark: r.IntN(2) == 0,
-	}
+	})
 }
 
 func randomRef(r *rand.Rand, m *model) Ref {

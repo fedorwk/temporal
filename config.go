@@ -13,11 +13,19 @@ const (
 	// TimeIndexNone disables event-time queries. They return
 	// StatusTimeIndexDisabled and Append pays no ordering cost.
 	TimeIndexNone TimeIndexMode = iota
-	// TimeIndexBTree orders records by (EventTime, Seq) in a B-tree.
+	// TimeIndexBTree orders records by (EventTime, Seq) in a B-tree. Records
+	// may arrive in any EventTime order.
 	TimeIndexBTree
+	// TimeIndexOrdered enables every event-time query for feeds whose
+	// EventTime never decreases (equal values are allowed). It keeps no extra
+	// structure: queries binary-search the ring, and Append costs about the
+	// same as TimeIndexNone. New requires LatePolicy LateReject with
+	// LateTolerance 0, so a record older than the newest accepted one fails
+	// with ErrLate.
+	TimeIndexOrdered
 )
 
-func (m TimeIndexMode) valid() bool { return m <= TimeIndexBTree }
+func (m TimeIndexMode) valid() bool { return m <= TimeIndexOrdered }
 
 // LatePolicy decides what happens to late records. Lateness is always flagged.
 type LatePolicy uint8
@@ -150,6 +158,8 @@ func (c *Config[T]) validate() (config[T], error) {
 		return config[T]{}, fmt.Errorf("%w: unknown SourceSeqPolicy %d", ErrInvalidConfig, c.SourceSeqPolicy)
 	case c.LateTolerance < 0:
 		return config[T]{}, fmt.Errorf("%w: LateTolerance must be >= 0, got %v", ErrInvalidConfig, c.LateTolerance)
+	case c.TimeIndex == TimeIndexOrdered && (c.LatePolicy != LateReject || c.LateTolerance != 0):
+		return config[T]{}, fmt.Errorf("%w: TimeIndexOrdered requires LatePolicy LateReject and LateTolerance 0", ErrInvalidConfig)
 	}
 
 	seen := make(map[string]struct{}, len(c.Indexes))

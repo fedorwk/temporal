@@ -11,25 +11,34 @@ type slotMeta struct {
 	flags       Flags
 }
 
+// metaRing is the non-generic half of the ring: slot arithmetic and the
+// per-slot metadata. TimeIndexOrdered reads EventTimes through it without
+// knowing T.
+type metaRing struct {
+	metas []slotMeta
+	seqs  []Seq // debug builds only: the Seq stored in each slot
+	n     uint64
+	mask  uint64 // n-1 when n is a power of two
+	pow2  bool
+}
+
 // ring is the preallocated, Seq-addressed record storage. It has no lock,
 // exposes no slices, and knows nothing about time or key indexes. The Series
 // owns its bounds and synchronization.
 type ring[T any] struct {
 	values []T
-	metas  []slotMeta
-	seqs   []Seq // debug builds only: the Seq stored in each slot
-	n      uint64
-	mask   uint64 // n-1 when n is a power of two
-	pow2   bool
+	metaRing
 }
 
 func newRing[T any](capacity int) ring[T] {
 	n := uint64(capacity)
 	r := ring[T]{
 		values: make([]T, capacity),
-		metas:  make([]slotMeta, capacity),
-		n:      n,
-		pow2:   n&(n-1) == 0,
+		metaRing: metaRing{
+			metas: make([]slotMeta, capacity),
+			n:     n,
+			pow2:  n&(n-1) == 0,
+		},
 	}
 	if r.pow2 {
 		r.mask = n - 1
@@ -41,7 +50,7 @@ func newRing[T any](capacity int) ring[T] {
 }
 
 // slot maps a Seq (>= 1) to its slot: (seq-1) mod capacity.
-func (r *ring[T]) slot(s Seq) int {
+func (r *metaRing) slot(s Seq) int {
 	if r.pow2 {
 		return int((uint64(s) - 1) & r.mask)
 	}
@@ -69,7 +78,7 @@ func (r *ring[T]) value(s Seq) *T {
 }
 
 // meta returns the stored metadata for a retained s.
-func (r *ring[T]) meta(s Seq) *slotMeta {
+func (r *metaRing) meta(s Seq) *slotMeta {
 	i := r.slot(s)
 	if debugAssert {
 		assertf(r.seqs[i] == s, "ring slot %d holds seq %d, want %d", i, r.seqs[i], s)
@@ -78,7 +87,7 @@ func (r *ring[T]) meta(s Seq) *slotMeta {
 }
 
 // eventTime returns the stored EventTime for a retained s.
-func (r *ring[T]) eventTime(s Seq) Timestamp { return r.meta(s).eventTime }
+func (r *metaRing) eventTime(s Seq) Timestamp { return r.meta(s).eventTime }
 
 // zero clears every slot so that references inside T can be collected.
 func (r *ring[T]) zero() {

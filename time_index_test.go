@@ -220,7 +220,7 @@ func TestTimeIndex_None(t *testing.T) {
 	if keys, more := x.Ascend(nil, timeKey{}, MaxTimestamp, 5); len(keys) != 0 || more {
 		t.Fatal("noTimeIndex Ascend returned keys")
 	}
-	if newTimeIndex(TimeIndexNone) != nil {
+	if newTimeIndex(TimeIndexNone, nil) != nil {
 		t.Fatal("TimeIndexNone must be a nil timeIndex (TI-008)")
 	}
 }
@@ -231,10 +231,16 @@ type indexOps struct {
 	nextSeq Seq
 	live    []timeKey // insertion (Seq) order, like ring retention
 	span    int
+	ordered bool      // EventTime never decreases (TimeIndexOrdered streams)
+	now     Timestamp // last EventTime when ordered
 }
 
 func (o *indexOps) newKey() timeKey {
 	o.nextSeq++
+	if o.ordered {
+		o.now += Timestamp(o.r.IntN(3)) // 0 makes a tie
+		return timeKey{eventTime: o.now, seq: o.nextSeq}
+	}
 	return timeKey{eventTime: Timestamp(o.r.IntN(o.span) - o.span/2), seq: o.nextSeq}
 }
 
@@ -282,12 +288,22 @@ func TestTimeIndex_Differential(t *testing.T) {
 					x.Clear()
 				}
 			}
-			compareIndexes(t, r, impls, o, fmt.Sprintf("run %d step %d", run, step))
+			compareIndexes(t, r, factoryNames(), impls, o, fmt.Sprintf("run %d step %d", run, step))
 		}
 	}
 }
 
-func compareIndexes(t *testing.T, r *rand.Rand, impls []timeIndex, o *indexOps, where string) {
+func factoryNames() []string {
+	names := make([]string, len(timeIndexFactories))
+	for i, f := range timeIndexFactories {
+		names[i] = f.name
+	}
+	return names
+}
+
+// compareIndexes checks every primitive of impls against the last element,
+// the slice reference, at random timestamps and keys.
+func compareIndexes(t *testing.T, r *rand.Rand, names []string, impls []timeIndex, o *indexOps, where string) {
 	t.Helper()
 	ref := impls[len(impls)-1] // the slice reference
 	randTS := func() Timestamp {
@@ -296,6 +312,11 @@ func compareIndexes(t *testing.T, r *rand.Rand, impls []timeIndex, o *indexOps, 
 			return MinTimestamp
 		case 1:
 			return MaxTimestamp
+		case 2, 3: // at or next to a live key
+			if len(o.live) > 0 {
+				return o.live[r.IntN(len(o.live))].eventTime + Timestamp(r.IntN(3)-1)
+			}
+			return 0
 		default:
 			return Timestamp(r.IntN(o.span+4) - o.span/2 - 2)
 		}
@@ -305,7 +326,7 @@ func compareIndexes(t *testing.T, r *rand.Rand, impls []timeIndex, o *indexOps, 
 		return timeKey{eventTime: randTS(), seq: seqs[r.IntN(len(seqs))]}
 	}
 	for i, x := range impls[:len(impls)-1] {
-		name := timeIndexFactories[i].name
+		name := names[i]
 		if x.Len() != ref.Len() || x.Len() != len(o.live) {
 			t.Fatalf("%s %s: Len %d, reference %d, live %d", where, name, x.Len(), ref.Len(), len(o.live))
 		}

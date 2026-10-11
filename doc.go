@@ -45,9 +45,14 @@
 // orders records by (EventTime, Seq) and enables AsOf, Before, After,
 // AtOrAfter, FirstAt, LastAt, AtAll, Range, RangeValues, Continue,
 // ContinueValues, PrevN, NextN, LatestByEventTime and Entries.
-// TimeIndexNone (the zero value) has no ordering cost on Append; those methods
-// return StatusTimeIndexDisabled and never fall back to a scan. Seq reads, key
-// lookups and subscriptions behave identically in both modes.
+// TimeIndexOrdered enables the same methods with the same results for feeds
+// whose EventTime never decreases: it keeps no extra structure and answers by
+// binary search over the stored records, so Append costs about the same as
+// TimeIndexNone. It requires LatePolicy LateReject with LateTolerance 0, so an
+// out-of-order record fails with ErrLate. TimeIndexNone (the zero value) has
+// no ordering cost on Append; those methods return StatusTimeIndexDisabled and
+// never fall back to a scan. Seq reads, key lookups and subscriptions behave
+// identically in every mode.
 //
 // Among records with equal EventTime, ingest order decides: AsOf returns the
 // latest ingested, FirstAt the earliest, LastAt the latest. AsOf and PrevN never
@@ -152,7 +157,7 @@
 //
 // In steady state, Get, Latest, the point event-time reads and UniqueIndex.Get
 // do not allocate, and batch reads do not allocate when cap(dst) suffices.
-// With TimeIndexNone and no key indexes, Append and AppendBatch do not
-// allocate. TimeIndexBTree adds amortized B-tree node allocations; key indexes
-// add per-key map costs.
+// With TimeIndexNone or TimeIndexOrdered and no key indexes, Append and
+// AppendBatch do not allocate. TimeIndexBTree adds amortized B-tree node
+// allocations; key indexes add per-key map costs.
 package temporal

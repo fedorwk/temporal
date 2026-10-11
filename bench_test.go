@@ -17,7 +17,7 @@ import (
 // and a practical subset of the §22.1 matrix; TEMPORAL_BENCH_FULL=1 enables
 // the full matrix (larger capacities, every value size, every disorder level).
 //
-// Run: ./scripts/bench.sh (benchstat None vs BTree) or
+// Run: ./scripts/bench.sh (benchstat across modes) or
 //      go test -run '^$' -bench . ./temporal
 
 var benchFull = os.Getenv("TEMPORAL_BENCH_FULL") == "1"
@@ -65,11 +65,38 @@ func eventTimes(n int, disorder, ties float64, seed uint64) []Timestamp {
 	return out
 }
 
-func modeName(m TimeIndexMode) string {
-	if m == TimeIndexBTree {
-		return "BTree"
+// benchTimes is eventTimes for mode: TimeIndexOrdered rejects late records,
+// so its stream keeps the ties but has no disorder.
+func benchTimes(mode TimeIndexMode, n int, disorder, ties float64, seed uint64) []Timestamp {
+	if mode == TimeIndexOrdered {
+		disorder = 0
 	}
-	return "None"
+	return eventTimes(n, disorder, ties, seed)
+}
+
+// streamTS returns the i-th event time of an endless stream built by
+// repeating times. For TimeIndexOrdered each repetition is shifted past the
+// previous one so the stream never goes back in time; other modes replay
+// times unchanged.
+func streamTS(mode TimeIndexMode, times []Timestamp, i int) Timestamp {
+	n := len(times)
+	ts := times[i%n]
+	if mode == TimeIndexOrdered {
+		ts += Timestamp(i/n) * (times[n-1] - times[0] + 1)
+	}
+	return ts
+}
+
+// noRejects fails the benchmark if any append was rejected: a rejected
+// append is cheap and would flatter the numbers.
+func noRejects[T any](b *testing.B, s *Series[T]) {
+	if n := s.Stats().Rejected; n != 0 {
+		b.Fatalf("%d appends rejected", n)
+	}
+}
+
+func modeName(m TimeIndexMode) string {
+	return [...]string{"None", "BTree", "Ordered"}[m]
 }
 
 func reportRecords(b *testing.B, records int) {
@@ -81,16 +108,17 @@ func reportRecords(b *testing.B, records int) {
 func BenchmarkCompare_Append(b *testing.B) {
 	for _, mode := range allModes {
 		b.Run("mode="+modeName(mode), func(b *testing.B) {
-			s := mustNew(b, Config[tick]{Capacity: 1 << 16, TimeIndex: mode})
-			times := eventTimes(1<<16, 0.01, 0.01, 1)
+			s := mustNew(b, withMode(mode, Config[tick]{Capacity: 1 << 16}))
+			times := benchTimes(mode, 1<<16, 0.01, 0.01, 1)
 			for i := range 1 << 16 { // fill so every append evicts
 				s.Append(tick{ID: uint64(i)}, at(times[i]))
 			}
 			b.ReportAllocs()
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
-				s.Append(tick{ID: uint64(i)}, at(times[i&(1<<16-1)]))
+				s.Append(tick{ID: uint64(i)}, at(streamTS(mode, times, 1<<16+i)))
 			}
+			noRejects(b, s)
 			reportRecords(b, b.N)
 		})
 	}
@@ -100,8 +128,8 @@ func BenchmarkCompare_AppendBatch(b *testing.B) {
 	for _, mode := range allModes {
 		for _, size := range []int{8, 64, 256, 1024} {
 			b.Run(fmt.Sprintf("mode=%s/batch=%d", modeName(mode), size), func(b *testing.B) {
-				s := mustNew(b, Config[tick]{Capacity: 1 << 16, TimeIndex: mode})
-				times := eventTimes(1<<16, 0.01, 0.01, 2)
+				s := mustNew(b, withMode(mode, Config[tick]{Capacity: 1 << 16}))
+				times := benchTimes(mode, 1<<16, 0.01, 0.01, 2)
 				// Pre-built batches covering the time stream, so the timed loop
 				// does no setup and never pauses the timer.
 				batches := make([][]Input[tick], (1<<16)/size)
@@ -118,9 +146,21 @@ func BenchmarkCompare_AppendBatch(b *testing.B) {
 				}
 				b.ReportAllocs()
 				b.ResetTimer()
+				period := times[len(times)-1] - times[0] + 1
 				for i := 0; i < b.N; i++ {
+					if mode == TimeIndexOrdered && i%len(batches) == 0 {
+						// Shift the stream forward once per pass, off the clock.
+						b.StopTimer()
+						for _, items := range batches {
+							for k := range items {
+								items[k].Meta.EventTime += period
+							}
+						}
+						b.StartTimer()
+					}
 					dst, _ = s.AppendBatch(dst[:0], batches[i%len(batches)])
 				}
+				noRejects(b, s)
 				reportRecords(b, b.N*size)
 			})
 		}
@@ -130,8 +170,8 @@ func BenchmarkCompare_AppendBatch(b *testing.B) {
 func BenchmarkCompare_ReadFrom(b *testing.B) {
 	for _, mode := range allModes {
 		b.Run("mode="+modeName(mode), func(b *testing.B) {
-			s := mustNew(b, Config[tick]{Capacity: 1 << 16, TimeIndex: mode})
-			times := eventTimes(1<<16, 0.01, 0.01, 3)
+			s := mustNew(b, withMode(mode, Config[tick]{Capacity: 1 << 16}))
+			times := benchTimes(mode, 1<<16, 0.01, 0.01, 3)
 			for i := range 1 << 16 {
 				s.Append(tick{ID: uint64(i)}, at(times[i]))
 			}
@@ -151,8 +191,8 @@ func BenchmarkCompare_ReadFrom(b *testing.B) {
 func BenchmarkCompare_SubscriptionNext(b *testing.B) {
 	for _, mode := range allModes {
 		b.Run("mode="+modeName(mode), func(b *testing.B) {
-			s := mustNew(b, Config[tick]{Capacity: 1 << 16, TimeIndex: mode})
-			times := eventTimes(1<<16, 0.01, 0.01, 4)
+			s := mustNew(b, withMode(mode, Config[tick]{Capacity: 1 << 16}))
+			times := benchTimes(mode, 1<<16, 0.01, 0.01, 4)
 			for i := range 1 << 16 {
 				s.Append(tick{ID: uint64(i)}, at(times[i]))
 			}
@@ -177,8 +217,8 @@ func BenchmarkCompare_SubscriptionNext(b *testing.B) {
 func BenchmarkCompare_AsOf(b *testing.B) {
 	for _, mode := range allModes {
 		b.Run("mode="+modeName(mode), func(b *testing.B) {
-			s := mustNew(b, Config[tick]{Capacity: 1 << 16, TimeIndex: mode})
-			times := eventTimes(1<<16, 0.01, 0.01, 5)
+			s := mustNew(b, withMode(mode, Config[tick]{Capacity: 1 << 16}))
+			times := benchTimes(mode, 1<<16, 0.01, 0.01, 5)
 			for i := range 1 << 16 {
 				s.Append(tick{ID: uint64(i)}, at(times[i]))
 			}
@@ -195,8 +235,8 @@ func BenchmarkCompare_AsOf(b *testing.B) {
 func BenchmarkCompare_Range(b *testing.B) {
 	for _, mode := range allModes {
 		b.Run("mode="+modeName(mode), func(b *testing.B) {
-			s := mustNew(b, Config[tick]{Capacity: 1 << 16, TimeIndex: mode})
-			times := eventTimes(1<<16, 0.01, 0.01, 6)
+			s := mustNew(b, withMode(mode, Config[tick]{Capacity: 1 << 16}))
+			times := benchTimes(mode, 1<<16, 0.01, 0.01, 6)
 			for i := range 1 << 16 {
 				s.Append(tick{ID: uint64(i)}, at(times[i]))
 			}
@@ -245,16 +285,17 @@ func BenchmarkMatrix_AppendDisorder(b *testing.B) {
 }
 
 func benchAppendSize[T any](b *testing.B, mode TimeIndexMode, capacity int, v T) {
-	s := mustNew(b, Config[T]{Capacity: capacity, TimeIndex: mode})
-	times := eventTimes(1<<16, 0.01, 0, 8)
+	s := mustNew(b, withMode(mode, Config[T]{Capacity: capacity}))
+	times := benchTimes(mode, 1<<16, 0.01, 0, 8)
 	for i := range capacity {
-		s.Append(v, at(times[i&(1<<16-1)]))
+		s.Append(v, at(streamTS(mode, times, i)))
 	}
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		s.Append(v, at(times[i&(1<<16-1)]))
+		s.Append(v, at(streamTS(mode, times, capacity+i)))
 	}
+	noRejects(b, s)
 	reportRecords(b, b.N)
 }
 
@@ -307,8 +348,8 @@ func BenchmarkMatrix_AppendIndexes(b *testing.B) {
 	for _, mode := range allModes {
 		for _, st := range setups {
 			b.Run(fmt.Sprintf("mode=%s/idx=%s", modeName(mode), st.name), func(b *testing.B) {
-				s := mustNew(b, Config[tick]{Capacity: 1 << 16, TimeIndex: mode, Indexes: st.idx()})
-				times := eventTimes(1<<16, 0.01, 0.01, 9)
+				s := mustNew(b, withMode(mode, Config[tick]{Capacity: 1 << 16, Indexes: st.idx()}))
+				times := benchTimes(mode, 1<<16, 0.01, 0.01, 9)
 				id := uint64(0)
 				next := func() tick {
 					id++
@@ -320,8 +361,9 @@ func BenchmarkMatrix_AppendIndexes(b *testing.B) {
 				b.ReportAllocs()
 				b.ResetTimer()
 				for i := 0; i < b.N; i++ {
-					s.Append(next(), at(times[i&(1<<16-1)]))
+					s.Append(next(), at(streamTS(mode, times, 1<<16+i)))
 				}
+				noRejects(b, s)
 				reportRecords(b, b.N)
 			})
 		}
@@ -410,15 +452,20 @@ func BenchmarkMatrix_Queries(b *testing.B) {
 func BenchmarkMatrix_ContendedAppend(b *testing.B) {
 	for _, mode := range allModes {
 		b.Run("mode="+modeName(mode), func(b *testing.B) {
-			s := mustNew(b, Config[tick]{Capacity: 1 << 16, TimeIndex: mode})
+			s := mustNew(b, withMode(mode, Config[tick]{Capacity: 1 << 16}))
 			var ts atomic.Int64
 			ts.Store(1)
 			b.ReportAllocs()
 			b.RunParallel(func(pb *testing.PB) {
 				for pb.Next() {
-					s.Append(tick{}, at(Timestamp(ts.Add(1))))
+					t := Timestamp(1) // Ordered: goroutines would race on a counter, so all records tie
+					if mode != TimeIndexOrdered {
+						t = Timestamp(ts.Add(1))
+					}
+					s.Append(tick{}, at(t))
 				}
 			})
+			noRejects(b, s)
 			reportRecords(b, b.N)
 		})
 	}
@@ -443,8 +490,8 @@ func BenchmarkWriteLatency(b *testing.B) {
 }
 
 func benchWriteLatency(b *testing.B, mode TimeIndexMode, readers, readSize int) {
-	s := mustNew(b, Config[tick]{Capacity: 1 << 16, TimeIndex: mode, MaxReadBatch: readSize})
-	times := eventTimes(1<<16, 0.01, 0.01, 11)
+	s := mustNew(b, withMode(mode, Config[tick]{Capacity: 1 << 16, MaxReadBatch: readSize}))
+	times := benchTimes(mode, 1<<16, 0.01, 0.01, 11)
 	for i := range 1 << 16 {
 		s.Append(tick{}, at(times[i]))
 	}
@@ -456,7 +503,7 @@ func benchWriteLatency(b *testing.B, mode TimeIndexMode, readers, readSize int) 
 			defer wg.Done()
 			dst := make([]Entry[tick], 0, readSize)
 			for i := 0; !stop.Load(); i++ {
-				if mode == TimeIndexBTree && r%2 == 1 {
+				if mode != TimeIndexNone && r%2 == 1 {
 					dst, _ = s.Range(dst[:0], times[i&(1<<15-1)], MaxTimestamp-1, readSize)
 				} else {
 					dst, _ = s.ReadFrom(dst[:0], Ref{}, readSize)
@@ -468,12 +515,13 @@ func benchWriteLatency(b *testing.B, mode TimeIndexMode, readers, readSize int) 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		start := time.Now()
-		s.Append(tick{}, at(times[i&(1<<16-1)]))
+		s.Append(tick{}, at(streamTS(mode, times, 1<<16+i)))
 		samples[i] = time.Since(start)
 	}
 	b.StopTimer()
 	stop.Store(true)
 	wg.Wait()
+	noRejects(b, s)
 	slices.Sort(samples)
 	b.ReportMetric(float64(samples[len(samples)/2].Nanoseconds()), "p50-ns")
 	b.ReportMetric(float64(samples[len(samples)*99/100].Nanoseconds()), "p99-ns")
@@ -494,6 +542,7 @@ func TestMemoryPerRow(t *testing.T) {
 	}{
 		{"None", func() Config[tick] { return Config[tick]{Capacity: capacity} }},
 		{"BTree", func() Config[tick] { return Config[tick]{Capacity: capacity, TimeIndex: TimeIndexBTree} }},
+		{"Ordered", func() Config[tick] { return withMode(TimeIndexOrdered, Config[tick]{Capacity: capacity}) }},
 		{"None+unique", func() Config[tick] {
 			return Config[tick]{Capacity: capacity, Indexes: []Index[tick]{
 				NewUniqueIndex("id", func(e *Entry[tick]) (uint64, bool) { return e.Value.ID, true }, ConflictReject),

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Runs the §22.3 None-vs-BTree comparison and writes raw results to
+# Runs the §22.3 comparison of every TimeIndexMode and writes raw results to
 # bench/compare.txt. Uses benchstat when installed
 # (go install golang.org/x/perf/cmd/benchstat@latest); otherwise falls back to
 # scripts/benchcmp.py (medians and a Mann-Whitney U test, no dependencies).

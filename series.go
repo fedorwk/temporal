@@ -96,8 +96,8 @@ func New[T any](cfg Config[T]) (*Series[T], error) {
 		gen:       1,
 		id:        seriesIDs.Add(1),
 		watermark: MinTimestamp,
-		time:      newTimeIndex(c.timeIndex),
 	}
+	s.time = newTimeIndex(c.timeIndex, &s.ring.metaRing)
 	if s.time != nil {
 		s.keyScratch = make([]timeKey, 0, c.maxReadBatch+1)
 		s.delKeys = make([]timeKey, 0, 1)

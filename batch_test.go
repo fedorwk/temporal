@@ -28,13 +28,20 @@ func TestAppendBatch_EquivalentToSequential(t *testing.T) {
 			policy := []ConflictPolicy{ConflictDrop, ConflictReplace, ConflictKeepFirst}[run%3]
 			u := NewUniqueIndex("id", func(e *Entry[trade]) (int, bool) { return e.Value.ID % (capacity + 2), true }, policy)
 			mi := NewMultiIndex("sym", bySymbol)
-			s := mustNew(t, Config[trade]{
+			s := mustNew(t, withMode(mode, Config[trade]{
 				Capacity:        capacity,
-				TimeIndex:       mode,
 				SourceSeqPolicy: SourceSeqFlag,
 				Indexes:         []Index[trade]{u, mi},
-			})
+			}))
 			return s, u, mi
+		}
+		var now Timestamp
+		eventTime := func() Timestamp {
+			if mode == TimeIndexOrdered { // the batch must not fail on ErrLate
+				now += Timestamp(r.IntN(3))
+				return now
+			}
+			return Timestamp(r.IntN(30))
 		}
 		batched, bu, bm := mk()
 		seq, su, sm := mk()
@@ -45,7 +52,7 @@ func TestAppendBatch_EquivalentToSequential(t *testing.T) {
 				id++
 				items[i] = Input[trade]{
 					Value: trade{ID: id, Symbol: []string{"A", "B"}[r.IntN(2)]},
-					Meta:  InputMeta{EventTime: Timestamp(r.IntN(30)), SourceSeq: uint64(r.IntN(10))},
+					Meta:  InputMeta{EventTime: eventTime(), SourceSeq: uint64(r.IntN(10))},
 				}
 			}
 			got, err := batched.AppendBatch(nil, items)
@@ -373,19 +380,23 @@ func TestAppendBatch_OneApply(t *testing.T) {
 	mustInvariants(t, s)
 }
 
-// T-026, W-009: AppendBatch with TimeIndexNone and no indexes does not
-// allocate in steady state.
+// T-026, W-009: AppendBatch with TimeIndexNone or TimeIndexOrdered and no
+// indexes does not allocate in steady state.
 func TestAllocs_AppendBatch(t *testing.T) {
 	skipAllocTest(t)
 	for _, mode := range allModes {
-		s := mustNew(t, Config[[3]float64]{Capacity: 512, TimeIndex: mode})
+		s := mustNew(t, withMode(mode, Config[[3]float64]{Capacity: 512}))
+		disorder := Timestamp(4)
+		if mode == TimeIndexOrdered {
+			disorder = 1
+		}
 		items := make([]Input[[3]float64], 64)
 		dst := make([]AppendResult, 0, 64)
 		ts := Timestamp(0)
 		step := func() {
 			for i := range items {
 				ts++
-				items[i] = Input[[3]float64]{Value: [3]float64{1, 2, 3}, Meta: at(ts - Timestamp(i%4))}
+				items[i] = Input[[3]float64]{Value: [3]float64{1, 2, 3}, Meta: at(ts - Timestamp(i)%disorder)}
 			}
 			var err error
 			if dst, err = s.AppendBatch(dst[:0], items); err != nil {
@@ -397,8 +408,8 @@ func TestAllocs_AppendBatch(t *testing.T) {
 		}
 		n := allocsPerOp(200, step)
 		t.Logf("mode %d: AppendBatch(64) %.4f allocs/op", mode, n)
-		if mode == TimeIndexNone && n != 0 {
-			t.Errorf("TimeIndexNone AppendBatch: %.4f allocs/op, want 0", n)
+		if mode != TimeIndexBTree && n != 0 {
+			t.Errorf("mode %d AppendBatch: %.4f allocs/op, want 0", mode, n)
 		}
 	}
 }

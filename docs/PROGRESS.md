@@ -333,3 +333,21 @@ Tests:
 - Model/fuzz: the panicking extractor stays in random runs; panics are recovered by the run loop (`catchPanic`) and compared with the model's `modelPanic`.
 - `TestSubscription_NextState`, `ExampleSubscription_NextState`.
 - Mutation checks: dropping the deferred clone-scratch clear, the deferred `endBatch`, or the deferred unlock in Append each fail tests (the last one deadlocks, as a recovered panic would in production).
+
+## Post-plan change — TimeIndexOrdered (S12-04)
+
+Requested by the user on 2026-10-11 as a cheaper way to get event-time queries on in-order feeds.
+
+Done:
+- `TimeIndexOrdered` mode (`config.go`): `New` requires `LatePolicy: LateReject` with `LateTolerance: 0`, so the existing late check rejects any record older than the newest accepted one with `ErrLate`; Append gains no new code.
+- `orderedTimeIndex` (`time_index_ordered.go`) implements `timeIndex` with no stored keys: it tracks the indexed Seq interval and binary-searches the ring's metadata, which is sorted by `(EventTime, Seq)` under the ordering rule. `Apply` is O(1) in normal builds (it moves the interval bounds; per-key iteration had cost +18% on AppendBatch); debug builds apply key by key and assert FIFO deletes, contiguous Seqs and nondecreasing EventTime.
+- `ring.go`: slot arithmetic and metadata split into a non-generic `metaRing` embedded in `ring[T]`, so the index reads EventTimes without knowing `T`.
+- `CheckInvariants` also verifies that the ordered index starts at the oldest retained Seq.
+- Docs: `doc.go`, README, `Example_orderedFeed`, BENCHMARKS.md; `scripts/benchcmp.py` compares every mode against None.
+
+Tests:
+- `TestOrderedTimeIndex_Primitives` (exhaustive comparison with the slice reference over small domains: empty, ties, FIFO Apply, Delete, Clear, sentinel-adjacent), `TestOrderedTimeIndex_Differential` (random in-order streams with eviction windows equal to the ring capacity, power-of-two and other capacities), `TestOrderedTimeIndex_DebugAsserts`, `TestOrderedTimeIndex_Allocs` (0 allocs for Apply and every lookup).
+- `TestOrdered_RejectsOutOfOrder`, `TestOrdered_MatchesBTree` (every event-time query, Range+Continue chains and Stats identical to TimeIndexBTree on in-order streams, capacities up to 300 with gating and Clear).
+- `allModes` now includes TimeIndexOrdered: the model property test, fuzz target, long runs, batch equivalence, race stress and allocation tests run it (`withMode` sets the required late policy); `TestModeEquivalence` compares None with Ordered under LateReject.
+- Mutation checks: seven of eight planted bugs in the ordered index (tie handling in either search, the exclusive Range bound, the Descend start, the lower search bound, Max, Delete bookkeeping) fail the tests; the surviving one (Before searching `> (ts, 0)` instead of `>= (ts, 0)`) is equivalent because Seq 0 is never assigned. In the O(1) `Apply` path, wrong bound arithmetic and a missed empty-index reset both fail the normal-build tests.
+- Benchmarks re-run for all three modes (`bench/`, BENCHMARKS.md); every append benchmark fails if the ordered stream has a rejected record.

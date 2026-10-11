@@ -55,6 +55,34 @@ func Example() {
 	// OK 104250
 }
 
+// A feed that arrives in event-time order gets every event-time query at
+// almost no ingest cost; an out-of-order record is rejected.
+func Example_orderedFeed() {
+	quotes, err := temporal.New(temporal.Config[int64]{
+		Capacity:   1 << 16,
+		TimeIndex:  temporal.TimeIndexOrdered,
+		LatePolicy: temporal.LateReject, // required by TimeIndexOrdered
+	})
+	if err != nil {
+		panic(err)
+	}
+	quotes.Append(104250, temporal.InputMeta{EventTime: ns + 10})
+	quotes.Append(104255, temporal.InputMeta{EventTime: ns + 20})
+	quotes.Append(104260, temporal.InputMeta{EventTime: ns + 20}) // equal times are fine
+
+	_, err = quotes.Append(104240, temporal.InputMeta{EventTime: ns + 15})
+	fmt.Println(errors.Is(err, temporal.ErrLate))
+
+	q, st := quotes.AsOf(ns + 25)
+	fmt.Println(st, q.Value)
+	q, st = quotes.Before(ns + 20)
+	fmt.Println(st, q.Value)
+	// Output:
+	// true
+	// OK 104260
+	// OK 104250
+}
+
 // Every no-data answer says why.
 func ExampleSeries_AsOf_statuses() {
 	s, _ := temporal.New(temporal.Config[int]{Capacity: 2, TimeIndex: temporal.TimeIndexBTree})

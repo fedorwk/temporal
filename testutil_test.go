@@ -72,7 +72,17 @@ func mustInvariants[T any](t testing.TB, s *Series[T]) {
 func at(ts Timestamp) InputMeta { return InputMeta{EventTime: ts} }
 
 // allModes lists every TimeIndexMode for mode-independence tests.
-var allModes = []TimeIndexMode{TimeIndexNone, TimeIndexBTree}
+var allModes = []TimeIndexMode{TimeIndexNone, TimeIndexBTree, TimeIndexOrdered}
+
+// withMode returns cfg with TimeIndex set to mode. For TimeIndexOrdered it
+// also sets the late policy New requires (LateReject, zero tolerance).
+func withMode[T any](mode TimeIndexMode, cfg Config[T]) Config[T] {
+	cfg.TimeIndex = mode
+	if mode == TimeIndexOrdered {
+		cfg.LatePolicy, cfg.LateTolerance = LateReject, 0
+	}
+	return cfg
+}
 
 // skipAllocTest skips allocation assertions where counts are not meaningful:
 // under the race detector and in temporaldebug builds (assertions box args).

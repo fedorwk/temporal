@@ -14,7 +14,7 @@ import (
 // every non-retained Ref, and Seq restarts at 1 after Clear.
 func TestGet_StatusMatrix(t *testing.T) {
 	for _, mode := range allModes {
-		s := mustNew(t, Config[int]{Capacity: 3, TimeIndex: mode})
+		s := mustNew(t, withMode(mode, Config[int]{Capacity: 3}))
 		for i := 1; i <= 5; i++ {
 			mustAppend(t, s, i*10, at(Timestamp(i)))
 		}

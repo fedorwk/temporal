@@ -20,7 +20,7 @@ single store you get:
 | Capability | What it gives you |
 |---|---|
 | **Arrival-order log** | Every record gets a `Seq`; replay with `ReadFrom` or follow live with a `Subscription`. |
-| **Event-time queries** (optional) | `AsOf`, `Range`, `PrevN`, `NextN`, `Entries`, ... ordered by `(EventTime, Seq)`. Off by default so ingest stays fast. |
+| **Event-time queries** (optional) | `AsOf`, `Range`, `PrevN`, `NextN`, `Entries`, ... ordered by `(EventTime, Seq)`. Off by default; nearly free for in-order feeds. |
 | **Key indexes** (optional) | Unique (`trade_id`) and multi-valued (`symbol`) lookups, with idempotent re-ingestion. |
 | **Late-data handling** | Out-of-order records are accepted and flagged, or rejected, per policy. |
 | **Watermarks** | A producer declares "complete through T"; reads can be gated so consumers never see non-final answers. |
@@ -110,11 +110,20 @@ flagged `FlagLate`; `LatePolicy` decides whether they are stored
 | `TimeIndex` | Append cost | Event-time queries |
 |---|---:|---|
 | `TimeIndexNone` (default) | ~26 ns | return `StatusTimeIndexDisabled`; never fall back to a scan |
-| `TimeIndexBTree` | ~96 ns | enabled |
+| `TimeIndexOrdered` | ~27 ns | enabled; `EventTime` must never decrease |
+| `TimeIndexBTree` | ~95 ns | enabled; records may arrive in any order |
 
-Seq reads, key lookups and subscriptions work identically in both modes. Use
-`None` for relays and raw capture, `BTree` where strategy code asks "what was
-the price at time T".
+Seq reads, key lookups and subscriptions work identically in every mode. Use
+`None` for relays and raw capture. Where strategy code asks "what was the
+price at time T", use `Ordered` for a feed that arrives in event-time order
+(one exchange stream, your own snapshots or bars) and `BTree` when records can
+arrive out of order (merged feeds, late corrections).
+
+`TimeIndexOrdered` keeps no extra structure: the ring is already sorted by
+event time, so queries binary-search it directly and return exactly what
+`BTree` would. It requires `LatePolicy: LateReject` with `LateTolerance: 0`
+(`New` fails otherwise), so a record older than the newest accepted one fails
+with `ErrLate`; equal event times are fine.
 
 Among records with equal `EventTime`, ingest order decides: `AsOf` returns the
 latest ingested, `FirstAt` the earliest.
@@ -146,7 +155,7 @@ documentation on pkg.go.dev.
 |---|---|
 | `New[T](Config[T]) (*Series[T], error)` | Create a series; `ErrInvalidConfig` on bad config. |
 | `Config.Capacity` | Required, >= 1. |
-| `Config.TimeIndex` | `TimeIndexNone` (default) or `TimeIndexBTree`. Immutable. |
+| `Config.TimeIndex` | `TimeIndexNone` (default), `TimeIndexOrdered` or `TimeIndexBTree`. Immutable. |
 | `Config.Indexes` | Key indexes, see below. |
 | `Config.Clone`, `CloneMode` | Deep-copy hook for values with slices, maps or pointers. |
 | `Config.LatePolicy`, `LateTolerance` | Late-record handling. |
@@ -176,7 +185,7 @@ documentation on pkg.go.dev.
 | `ReadFrom(dst, from, limit)` | Replay in Seq order. Continue with `Ref{Gen, LastRef.Seq+1}`. |
 | `OldestRef()`, `NewestRef()`, `Len()`, `Cap()`, `Gen()` | Bounds and size. |
 
-### Reads by event time (`TimeIndexBTree`)
+### Reads by event time (`TimeIndexOrdered` or `TimeIndexBTree`)
 
 | | |
 |---|---|
@@ -273,7 +282,8 @@ results, err := trades.AppendBatch(resultsBuf[:0], items)
 
 The batch is atomic: if any item fails (for example `ConflictReject`), nothing
 is applied, and a `*ConflictError` names the failing position in `BatchPos`.
-Reusing `resultsBuf` keeps the path allocation-free for `TimeIndexNone`.
+Reusing `resultsBuf` keeps the path allocation-free for `TimeIndexNone` and
+`TimeIndexOrdered`.
 A batch larger than `Capacity` fails with `ErrBatchTooLarge`.
 
 ### Event-time queries
@@ -461,20 +471,20 @@ and panic policy. The runnable version with a persisted checkpoint is
 Apple M4, Go 1.27.1, 32-byte value, capacity 65,536 (ring full, every append
 evicts). Medians of 10 runs.
 
-| Operation | `TimeIndexNone` | `TimeIndexBTree` |
-|---|---:|---:|
-| `Append` | 25.7 ns (39 M rec/s) | 96.3 ns (10.4 M rec/s) |
-| `AppendBatch(256)` | 4.7 us (54 M rec/s) | 25.5 us (10 M rec/s) |
-| `AsOf` | n/a | 152 ns |
-| `Range` (256 entries) | n/a | 2.2 us |
-| `ReadFrom` (256 entries) | 1.13 us | 1.13 us |
-| Memory per retained row | 64 B | 99 B |
+| Operation | `TimeIndexNone` | `TimeIndexOrdered` | `TimeIndexBTree` |
+|---|---:|---:|---:|
+| `Append` | 25.7 ns (39 M rec/s) | 27.0 ns (37 M rec/s) | 95.4 ns (10.5 M rec/s) |
+| `AppendBatch(256)` | 4.7 us (55 M rec/s) | 4.9 us (52 M rec/s) | 25.2 us (10 M rec/s) |
+| `AsOf` | n/a | 115 ns | 154 ns |
+| `Range` (256 entries) | n/a | 1.5 us | 2.2 us |
+| `ReadFrom` (256 entries) | 1.11 us | 1.11 us | 1.12 us |
+| Memory per retained row | 64 B | 64 B | 99 B |
 
 - Steady-state point reads and batch reads (with sufficient `cap(dst)`)
-  allocate nothing; `Append`/`AppendBatch` allocate nothing without a time
-  index or key indexes.
-- The event-time index costs about 70 ns per record on ingest and does not
-  affect reads by Seq or subscriptions.
+  allocate nothing; `Append`/`AppendBatch` allocate nothing with
+  `TimeIndexNone` or `TimeIndexOrdered` and no key indexes.
+- The B-tree costs about 70 ns per record on ingest; `TimeIndexOrdered` about
+  1-2 ns. Neither affects reads by Seq or subscriptions.
 - A unique key index adds roughly 70 ns per append (map operations) and about
   44 bytes per retained row.
 
@@ -487,8 +497,8 @@ Reproduce with `./scripts/bench.sh`; raw results are in `bench/`, analysis in
   lookback you need at the peak event rate; `StatusExpired` tells you when a
   query reached past it.
 - **Memory** is about `Capacity x (sizeof(T) + 32)` bytes for
-  `TimeIndexNone`, plus ~35 B/row for the B-tree and ~30-45 B/row per key
-  index, plus whatever `T` points to.
+  `TimeIndexNone` and `TimeIndexOrdered`, plus ~35 B/row for the B-tree and
+  ~30-45 B/row per key index, plus whatever `T` points to.
 - **One series per stream** (per symbol and kind). A series is one mutex;
   sharding by stream keeps writers independent.
 
@@ -496,7 +506,7 @@ Reproduce with `./scripts/bench.sh`; raw results are in `bench/`, analysis in
 
 ```bash
 ./scripts/check.sh    # gofmt, vet, tests (plain, -race, -tags temporaldebug)
-./scripts/bench.sh    # benchmarks and the None-vs-BTree comparison
+./scripts/bench.sh    # benchmarks and the time-index mode comparison
 ```
 
 Testing includes a reference-model property test, a fuzz target

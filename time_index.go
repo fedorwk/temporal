@@ -30,10 +30,13 @@ type timeIndex interface {
 }
 
 // newTimeIndex returns the implementation for mode, or nil for TimeIndexNone.
-func newTimeIndex(mode TimeIndexMode) timeIndex {
+// r is the Series' ring, which TimeIndexOrdered searches directly.
+func newTimeIndex(mode TimeIndexMode, r *metaRing) timeIndex {
 	switch mode {
 	case TimeIndexBTree:
 		return newBTreeTimeIndex()
+	case TimeIndexOrdered:
+		return newOrderedTimeIndex(r)
 	default:
 		return nil
 	}

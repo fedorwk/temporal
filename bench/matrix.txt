@@ -1,115 +1,137 @@
 goos: darwin
 goarch: arm64
-pkg: github.com/fedorwk/temporal/temporal
+pkg: github.com/fedorwk/temporal
 cpu: Apple M4
-BenchmarkMatrix_AppendDisorder/disorder=0/ties=0-10         	 2490716	        91.91 ns/op	  10880510 records/s	      33 B/op	       0 allocs/op
-BenchmarkMatrix_AppendDisorder/disorder=0/ties=0.1-10       	 2573185	        93.14 ns/op	  10736850 records/s	      33 B/op	       0 allocs/op
-BenchmarkMatrix_AppendDisorder/disorder=0.01/ties=0-10      	 2470186	        95.56 ns/op	  10464257 records/s	      31 B/op	       0 allocs/op
-BenchmarkMatrix_AppendDisorder/disorder=0.01/ties=0.1-10    	 2478922	        96.82 ns/op	  10328372 records/s	      31 B/op	       0 allocs/op
-BenchmarkMatrix_AppendDisorder/disorder=0.1/ties=0-10       	 2197407	       109.1 ns/op	   9169698 records/s	      29 B/op	       0 allocs/op
-BenchmarkMatrix_AppendDisorder/disorder=0.1/ties=0.1-10     	 2157968	       114.5 ns/op	   8731074 records/s	      29 B/op	       0 allocs/op
-BenchmarkMatrix_AppendDisorder/disorder=-1/ties=0-10        	 2467201	        96.51 ns/op	  10362149 records/s	      34 B/op	       0 allocs/op
-BenchmarkMatrix_AppendDisorder/disorder=-1/ties=0.1-10      	 2417830	        99.02 ns/op	  10099368 records/s	      34 B/op	       0 allocs/op
-BenchmarkMatrix_AppendValueSize/mode=None/cap=1024/T=16B-10 	 9405908	        25.66 ns/op	  38969496 records/s	       0 B/op	       0 allocs/op
-BenchmarkMatrix_AppendValueSize/mode=None/cap=1024/T=64B-10 	 8911689	        26.69 ns/op	  37461353 records/s	       0 B/op	       0 allocs/op
-BenchmarkMatrix_AppendValueSize/mode=None/cap=1024/T=256B-10         	 8183572	        29.70 ns/op	  33674889 records/s	       0 B/op	       0 allocs/op
-BenchmarkMatrix_AppendValueSize/mode=None/cap=65536/T=16B-10         	 9353032	        25.65 ns/op	  38984666 records/s	       0 B/op	       0 allocs/op
-BenchmarkMatrix_AppendValueSize/mode=None/cap=65536/T=64B-10         	 8986548	        27.15 ns/op	  36833926 records/s	       0 B/op	       0 allocs/op
-BenchmarkMatrix_AppendValueSize/mode=None/cap=65536/T=256B-10        	 7793599	        29.91 ns/op	  33434083 records/s	       0 B/op	       0 allocs/op
-BenchmarkMatrix_AppendValueSize/mode=None/cap=100000/T=16B-10        	 9295044	        25.84 ns/op	  38693894 records/s	       0 B/op	       0 allocs/op
-BenchmarkMatrix_AppendValueSize/mode=None/cap=100000/T=64B-10        	 8994954	        26.87 ns/op	  37218773 records/s	       0 B/op	       0 allocs/op
-BenchmarkMatrix_AppendValueSize/mode=None/cap=100000/T=256B-10       	 7855330	        30.34 ns/op	  32963236 records/s	       0 B/op	       0 allocs/op
-BenchmarkMatrix_AppendValueSize/mode=BTree/cap=1024/T=16B-10         	 3058652	        77.77 ns/op	  12857721 records/s	      33 B/op	       0 allocs/op
-BenchmarkMatrix_AppendValueSize/mode=BTree/cap=1024/T=64B-10         	 3005458	        80.08 ns/op	  12487901 records/s	      33 B/op	       0 allocs/op
-BenchmarkMatrix_AppendValueSize/mode=BTree/cap=1024/T=256B-10        	 2858960	        83.93 ns/op	  11915234 records/s	      33 B/op	       0 allocs/op
-BenchmarkMatrix_AppendValueSize/mode=BTree/cap=65536/T=16B-10        	 2528836	        98.08 ns/op	  10195431 records/s	       1 B/op	       0 allocs/op
-BenchmarkMatrix_AppendValueSize/mode=BTree/cap=65536/T=64B-10        	 2483800	        96.54 ns/op	  10358847 records/s	       1 B/op	       0 allocs/op
-BenchmarkMatrix_AppendValueSize/mode=BTree/cap=65536/T=256B-10       	 2344898	       101.6 ns/op	   9846304 records/s	       1 B/op	       0 allocs/op
-BenchmarkMatrix_AppendValueSize/mode=BTree/cap=100000/T=16B-10       	 2233040	       107.4 ns/op	   9312933 records/s	      11 B/op	       0 allocs/op
-BenchmarkMatrix_AppendValueSize/mode=BTree/cap=100000/T=64B-10       	 2147157	       110.2 ns/op	   9077879 records/s	      11 B/op	       0 allocs/op
-BenchmarkMatrix_AppendValueSize/mode=BTree/cap=100000/T=256B-10      	 2095282	       115.2 ns/op	   8679791 records/s	      11 B/op	       0 allocs/op
-BenchmarkMatrix_AppendIndexes/mode=None/idx=none-10                  	 9156664	        26.17 ns/op	  38218481 records/s	       0 B/op	       0 allocs/op
-BenchmarkMatrix_AppendIndexes/mode=None/idx=unique-10                	 2537546	        97.70 ns/op	  10235597 records/s	       0 B/op	       0 allocs/op
-BenchmarkMatrix_AppendIndexes/mode=None/idx=unique+multi(low)-10     	 1847220	       132.2 ns/op	   7566622 records/s	       1 B/op	       0 allocs/op
-BenchmarkMatrix_AppendIndexes/mode=None/idx=unique+multi(high)-10    	 1662238	       143.8 ns/op	   6953594 records/s	       0 B/op	       0 allocs/op
-BenchmarkMatrix_AppendIndexes/mode=BTree/idx=none-10                 	 2501654	        96.38 ns/op	  10375709 records/s	       1 B/op	       0 allocs/op
-BenchmarkMatrix_AppendIndexes/mode=BTree/idx=unique-10               	 1377895	       173.7 ns/op	   5755849 records/s	       2 B/op	       0 allocs/op
-BenchmarkMatrix_AppendIndexes/mode=BTree/idx=unique+multi(low)-10    	 1000000	       208.1 ns/op	   4804672 records/s	       6 B/op	       0 allocs/op
-BenchmarkMatrix_AppendIndexes/mode=BTree/idx=unique+multi(high)-10   	 1000000	       223.5 ns/op	   4474429 records/s	       4 B/op	       0 allocs/op
-BenchmarkMatrix_Queries/point/UniqueGet-10                           	 6839026	        35.28 ns/op	       0 B/op	       0 allocs/op
-BenchmarkMatrix_Queries/point/Get-10                                 	24096788	         9.876 ns/op	       0 B/op	       0 allocs/op
-BenchmarkMatrix_Queries/point/Latest-10                              	24686382	         9.933 ns/op	       0 B/op	       0 allocs/op
-BenchmarkMatrix_Queries/point/AsOf-10                                	 1780339	       132.1 ns/op	       0 B/op	       0 allocs/op
-BenchmarkMatrix_Queries/point/Before-10                              	 1797558	       133.4 ns/op	       0 B/op	       0 allocs/op
-BenchmarkMatrix_Queries/point/After-10                               	 1783449	       134.0 ns/op	       0 B/op	       0 allocs/op
-BenchmarkMatrix_Queries/batch/Range/n=1/prealloc=true-10             	 1631743	       147.0 ns/op	   6803974 records/s	       0 B/op	       0 allocs/op
-BenchmarkMatrix_Queries/batch/PrevN/n=1/prealloc=true-10             	 1741425	       138.7 ns/op	   7211945 records/s	       0 B/op	       0 allocs/op
-BenchmarkMatrix_Queries/batch/NextN/n=1/prealloc=true-10             	 1739968	       137.8 ns/op	   7255009 records/s	       0 B/op	       0 allocs/op
-BenchmarkMatrix_Queries/batch/MultiGet/n=1/prealloc=true-10          	 9830978	        24.29 ns/op	  41169873 records/s	       0 B/op	       0 allocs/op
-BenchmarkMatrix_Queries/batch/ReadFrom/n=1/prealloc=true-10          	15091491	        16.13 ns/op	  61985257 records/s	       0 B/op	       0 allocs/op
-BenchmarkMatrix_Queries/batch/Range/n=1/prealloc=false-10            	 1413342	       167.4 ns/op	   5972774 records/s	      80 B/op	       1 allocs/op
-BenchmarkMatrix_Queries/batch/PrevN/n=1/prealloc=false-10            	 1513405	       159.0 ns/op	   6291177 records/s	      80 B/op	       1 allocs/op
-BenchmarkMatrix_Queries/batch/NextN/n=1/prealloc=false-10            	 1561863	       153.4 ns/op	   6520277 records/s	      80 B/op	       1 allocs/op
-BenchmarkMatrix_Queries/batch/MultiGet/n=1/prealloc=false-10         	 7147093	        33.10 ns/op	  30209856 records/s	      80 B/op	       1 allocs/op
-BenchmarkMatrix_Queries/batch/ReadFrom/n=1/prealloc=false-10         	 9514118	        24.73 ns/op	  40430597 records/s	      80 B/op	       1 allocs/op
-BenchmarkMatrix_Queries/batch/ReadFrom/n=8/prealloc=true-10          	 5229678	        46.21 ns/op	 173133569 records/s	       0 B/op	       0 allocs/op
-BenchmarkMatrix_Queries/batch/Range/n=8/prealloc=true-10             	 1000000	       213.5 ns/op	  37477616 records/s	       0 B/op	       0 allocs/op
-BenchmarkMatrix_Queries/batch/PrevN/n=8/prealloc=true-10             	 1000000	       213.1 ns/op	  37545788 records/s	       0 B/op	       0 allocs/op
-BenchmarkMatrix_Queries/batch/NextN/n=8/prealloc=true-10             	 1000000	       202.1 ns/op	  39591221 records/s	       0 B/op	       0 allocs/op
-BenchmarkMatrix_Queries/batch/MultiGet/n=8/prealloc=true-10          	 4190455	        57.15 ns/op	 139988544 records/s	       0 B/op	       0 allocs/op
-BenchmarkMatrix_Queries/batch/ReadFrom/n=8/prealloc=false-10         	 3125031	        76.12 ns/op	 105097631 records/s	     640 B/op	       1 allocs/op
-BenchmarkMatrix_Queries/batch/Range/n=8/prealloc=false-10            	  829814	       251.2 ns/op	  31849608 records/s	     640 B/op	       1 allocs/op
-BenchmarkMatrix_Queries/batch/PrevN/n=8/prealloc=false-10            	  886684	       246.1 ns/op	  32502924 records/s	     640 B/op	       1 allocs/op
-BenchmarkMatrix_Queries/batch/NextN/n=8/prealloc=false-10            	  906529	       235.5 ns/op	  33967816 records/s	     640 B/op	       1 allocs/op
-BenchmarkMatrix_Queries/batch/MultiGet/n=8/prealloc=false-10         	 2799465	        85.63 ns/op	  93423018 records/s	     640 B/op	       1 allocs/op
-BenchmarkMatrix_Queries/batch/PrevN/n=64/prealloc=true-10            	  341176	       712.3 ns/op	  89850228 records/s	       0 B/op	       0 allocs/op
-BenchmarkMatrix_Queries/batch/NextN/n=64/prealloc=true-10            	  360270	       674.9 ns/op	  94825765 records/s	       0 B/op	       0 allocs/op
-BenchmarkMatrix_Queries/batch/MultiGet/n=64/prealloc=true-10         	  781143	       308.0 ns/op	 207826727 records/s	       0 B/op	       0 allocs/op
-BenchmarkMatrix_Queries/batch/ReadFrom/n=64/prealloc=true-10         	  856976	       275.6 ns/op	 232208200 records/s	       0 B/op	       0 allocs/op
-BenchmarkMatrix_Queries/batch/Range/n=64/prealloc=true-10            	  351370	       691.9 ns/op	  92497167 records/s	       0 B/op	       0 allocs/op
-BenchmarkMatrix_Queries/batch/Range/n=64/prealloc=false-10           	  260902	       925.9 ns/op	  69118727 records/s	    5376 B/op	       1 allocs/op
-BenchmarkMatrix_Queries/batch/PrevN/n=64/prealloc=false-10           	  252158	       877.0 ns/op	  72973588 records/s	    5376 B/op	       1 allocs/op
-BenchmarkMatrix_Queries/batch/NextN/n=64/prealloc=false-10           	  271615	       843.7 ns/op	  75852690 records/s	    5376 B/op	       1 allocs/op
-BenchmarkMatrix_Queries/batch/MultiGet/n=64/prealloc=false-10        	  471662	       469.3 ns/op	 136383808 records/s	    5376 B/op	       1 allocs/op
-BenchmarkMatrix_Queries/batch/ReadFrom/n=64/prealloc=false-10        	  500042	       444.0 ns/op	 144144159 records/s	    5376 B/op	       1 allocs/op
-BenchmarkMatrix_Queries/batch/PrevN/n=256/prealloc=true-10           	   96342	      2798 ns/op	  91498025 records/s	       0 B/op	       0 allocs/op
-BenchmarkMatrix_Queries/batch/NextN/n=256/prealloc=true-10           	  103669	      2354 ns/op	 108745767 records/s	       0 B/op	       0 allocs/op
-BenchmarkMatrix_Queries/batch/MultiGet/n=256/prealloc=true-10        	  224036	      1096 ns/op	 233487611 records/s	       0 B/op	       0 allocs/op
-BenchmarkMatrix_Queries/batch/ReadFrom/n=256/prealloc=true-10        	  222372	      1057 ns/op	 242264502 records/s	       0 B/op	       0 allocs/op
-BenchmarkMatrix_Queries/batch/Range/n=256/prealloc=true-10           	  105849	      2263 ns/op	 113125684 records/s	       0 B/op	       0 allocs/op
-BenchmarkMatrix_Queries/batch/NextN/n=256/prealloc=false-10          	   88123	      2675 ns/op	  95708439 records/s	   20480 B/op	       1 allocs/op
-BenchmarkMatrix_Queries/batch/MultiGet/n=256/prealloc=false-10       	  147195	      1604 ns/op	 159641813 records/s	   20480 B/op	       1 allocs/op
-BenchmarkMatrix_Queries/batch/ReadFrom/n=256/prealloc=false-10       	  155444	      1523 ns/op	 168122381 records/s	   20480 B/op	       1 allocs/op
-BenchmarkMatrix_Queries/batch/Range/n=256/prealloc=false-10          	   85489	      2743 ns/op	  93331057 records/s	   20480 B/op	       1 allocs/op
-BenchmarkMatrix_Queries/batch/PrevN/n=256/prealloc=false-10          	   83845	      2786 ns/op	  91891258 records/s	   20480 B/op	       1 allocs/op
-BenchmarkMatrix_Queries/batch/MultiGet/n=4096/prealloc=true-10       	   12115	     19618 ns/op	 208791460 records/s	       0 B/op	       0 allocs/op
-BenchmarkMatrix_Queries/batch/ReadFrom/n=4096/prealloc=true-10       	   13029	     18470 ns/op	 221768024 records/s	       0 B/op	       0 allocs/op
-BenchmarkMatrix_Queries/batch/Range/n=4096/prealloc=true-10          	    6895	     34263 ns/op	 119546081 records/s	       0 B/op	       0 allocs/op
-BenchmarkMatrix_Queries/batch/PrevN/n=4096/prealloc=true-10          	    6996	     34240 ns/op	 119626355 records/s	       0 B/op	       0 allocs/op
-BenchmarkMatrix_Queries/batch/NextN/n=4096/prealloc=true-10          	    6979	     34054 ns/op	 120280901 records/s	       0 B/op	       0 allocs/op
-BenchmarkMatrix_Queries/batch/ReadFrom/n=4096/prealloc=false-10      	    8739	     24088 ns/op	 170041888 records/s	  327680 B/op	       1 allocs/op
-BenchmarkMatrix_Queries/batch/Range/n=4096/prealloc=false-10         	    6044	     39935 ns/op	 102566181 records/s	  327680 B/op	       1 allocs/op
-BenchmarkMatrix_Queries/batch/PrevN/n=4096/prealloc=false-10         	    6037	     39132 ns/op	 104671336 records/s	  316177 B/op	       1 allocs/op
-BenchmarkMatrix_Queries/batch/NextN/n=4096/prealloc=false-10         	    5704	     39033 ns/op	 104936879 records/s	  327680 B/op	       1 allocs/op
-BenchmarkMatrix_Queries/batch/MultiGet/n=4096/prealloc=false-10      	    8898	     25378 ns/op	 161402338 records/s	  327680 B/op	       1 allocs/op
-BenchmarkMatrix_Queries/scan/Entries/16K-10                          	    1303	    179913 ns/op	  91066081 records/s	  327752 B/op	       4 allocs/op
-BenchmarkMatrix_ContendedAppend/mode=None-10                         	 2332204	       103.6 ns/op	   9654618 records/s	       1 B/op	       0 allocs/op
-BenchmarkMatrix_ContendedAppend/mode=BTree-10                        	 1596716	       150.9 ns/op	   6627188 records/s	      45 B/op	       0 allocs/op
-BenchmarkWriteLatency/mode=None/readers=1/read=64-10                 	   10000	     56181 ns/op	       125.0 p50-ns	    459583 p99-ns	       0 B/op	       0 allocs/op
-BenchmarkWriteLatency/mode=None/readers=1/read=4096-10               	   16989	     14197 ns/op	        42.00 p50-ns	   1018709 p99-ns	       0 B/op	       0 allocs/op
-BenchmarkWriteLatency/mode=None/readers=2/read=64-10                 	   10000	     33136 ns/op	       458.0 p50-ns	    309458 p99-ns	       1 B/op	       0 allocs/op
-BenchmarkWriteLatency/mode=None/readers=2/read=4096-10               	   10000	    625862 ns/op	   1047375 p50-ns	   1071500 p99-ns	      67 B/op	       0 allocs/op
-BenchmarkWriteLatency/mode=None/readers=8/read=64-10                 	   10000	     56034 ns/op	      4708 p50-ns	    924750 p99-ns	       4 B/op	       0 allocs/op
-BenchmarkWriteLatency/mode=None/readers=8/read=4096-10               	   10000	   1040616 ns/op	   1055709 p50-ns	   1080625 p99-ns	     262 B/op	       0 allocs/op
-BenchmarkWriteLatency/mode=None/readers=32/read=64-10                	    3156	     78220 ns/op	      2792 p50-ns	   1466000 p99-ns	      54 B/op	       0 allocs/op
-BenchmarkWriteLatency/mode=None/readers=32/read=4096-10              	    1149	    915935 ns/op	   1053375 p50-ns	   1086375 p99-ns	    9131 B/op	       0 allocs/op
-BenchmarkWriteLatency/mode=BTree/readers=1/read=64-10                	   26192	     18135 ns/op	       166.0 p50-ns	    352459 p99-ns	      35 B/op	       0 allocs/op
-BenchmarkWriteLatency/mode=BTree/readers=1/read=4096-10              	   10000	     30783 ns/op	       125.0 p50-ns	   1030833 p99-ns	      67 B/op	       0 allocs/op
-BenchmarkWriteLatency/mode=BTree/readers=2/read=64-10                	   10000	     28875 ns/op	       167.0 p50-ns	    867958 p99-ns	      36 B/op	       0 allocs/op
-BenchmarkWriteLatency/mode=BTree/readers=2/read=4096-10              	     615	    922439 ns/op	   1078000 p50-ns	   1102167 p99-ns	    1101 B/op	       0 allocs/op
-BenchmarkWriteLatency/mode=BTree/readers=8/read=64-10                	    4444	     54093 ns/op	       167.0 p50-ns	   1396917 p99-ns	      44 B/op	       0 allocs/op
-BenchmarkWriteLatency/mode=BTree/readers=8/read=4096-10              	     740	   1043170 ns/op	   1093250 p50-ns	   1115375 p99-ns	    3589 B/op	       0 allocs/op
-BenchmarkWriteLatency/mode=BTree/readers=32/read=64-10               	    3244	     92344 ns/op	       167.0 p50-ns	   1876542 p99-ns	      91 B/op	       0 allocs/op
-BenchmarkWriteLatency/mode=BTree/readers=32/read=4096-10             	    1942	   1085908 ns/op	   1077708 p50-ns	   1133666 p99-ns	    5266 B/op	       0 allocs/op
+BenchmarkMatrix_AppendDisorder/disorder=0/ties=0-10         	 2542261	        89.44 ns/op	  11180669 records/s	      33 B/op	       0 allocs/op
+BenchmarkMatrix_AppendDisorder/disorder=0/ties=0.1-10       	 2598835	        91.49 ns/op	  10930576 records/s	      33 B/op	       0 allocs/op
+BenchmarkMatrix_AppendDisorder/disorder=0.01/ties=0-10      	 2574938	        93.54 ns/op	  10690795 records/s	      31 B/op	       0 allocs/op
+BenchmarkMatrix_AppendDisorder/disorder=0.01/ties=0.1-10    	 2484585	        95.49 ns/op	  10472147 records/s	      31 B/op	       0 allocs/op
+BenchmarkMatrix_AppendDisorder/disorder=0.1/ties=0-10       	 2228076	       112.8 ns/op	   8863309 records/s	      29 B/op	       0 allocs/op
+BenchmarkMatrix_AppendDisorder/disorder=0.1/ties=0.1-10     	 2173074	       110.3 ns/op	   9067842 records/s	      29 B/op	       0 allocs/op
+BenchmarkMatrix_AppendDisorder/disorder=-1/ties=0-10        	 2485149	        94.64 ns/op	  10566381 records/s	      34 B/op	       0 allocs/op
+BenchmarkMatrix_AppendDisorder/disorder=-1/ties=0.1-10      	 2433573	        99.30 ns/op	  10070551 records/s	      34 B/op	       0 allocs/op
+BenchmarkMatrix_AppendValueSize/mode=None/cap=1024/T=16B-10 	 9351939	        25.56 ns/op	  39120286 records/s	       0 B/op	       0 allocs/op
+BenchmarkMatrix_AppendValueSize/mode=None/cap=1024/T=64B-10 	 9249994	        25.95 ns/op	  38539815 records/s	       0 B/op	       0 allocs/op
+BenchmarkMatrix_AppendValueSize/mode=None/cap=1024/T=256B-10         	 8229652	        29.39 ns/op	  34027895 records/s	       0 B/op	       0 allocs/op
+BenchmarkMatrix_AppendValueSize/mode=None/cap=65536/T=16B-10         	 9423081	        25.52 ns/op	  39190050 records/s	       0 B/op	       0 allocs/op
+BenchmarkMatrix_AppendValueSize/mode=None/cap=65536/T=64B-10         	 9181872	        26.22 ns/op	  38145252 records/s	       0 B/op	       0 allocs/op
+BenchmarkMatrix_AppendValueSize/mode=None/cap=65536/T=256B-10        	 8132800	        29.73 ns/op	  33641655 records/s	       0 B/op	       0 allocs/op
+BenchmarkMatrix_AppendValueSize/mode=None/cap=100000/T=16B-10        	 9430471	        25.58 ns/op	  39090967 records/s	       0 B/op	       0 allocs/op
+BenchmarkMatrix_AppendValueSize/mode=None/cap=100000/T=64B-10        	 9119695	        26.20 ns/op	  38174085 records/s	       0 B/op	       0 allocs/op
+BenchmarkMatrix_AppendValueSize/mode=None/cap=100000/T=256B-10       	 8025916	        29.65 ns/op	  33727603 records/s	       0 B/op	       0 allocs/op
+BenchmarkMatrix_AppendValueSize/mode=BTree/cap=1024/T=16B-10         	 3045542	        78.84 ns/op	  12684625 records/s	      33 B/op	       0 allocs/op
+BenchmarkMatrix_AppendValueSize/mode=BTree/cap=1024/T=64B-10         	 3019398	        79.15 ns/op	  12633821 records/s	      33 B/op	       0 allocs/op
+BenchmarkMatrix_AppendValueSize/mode=BTree/cap=1024/T=256B-10        	 2855629	        83.98 ns/op	  11907598 records/s	      33 B/op	       0 allocs/op
+BenchmarkMatrix_AppendValueSize/mode=BTree/cap=65536/T=16B-10        	 2507226	        95.52 ns/op	  10469220 records/s	       1 B/op	       0 allocs/op
+BenchmarkMatrix_AppendValueSize/mode=BTree/cap=65536/T=64B-10        	 2493078	        96.23 ns/op	  10392258 records/s	       1 B/op	       0 allocs/op
+BenchmarkMatrix_AppendValueSize/mode=BTree/cap=65536/T=256B-10       	 2368327	       104.2 ns/op	   9597526 records/s	       1 B/op	       0 allocs/op
+BenchmarkMatrix_AppendValueSize/mode=BTree/cap=100000/T=16B-10       	 2432316	        98.02 ns/op	  10202013 records/s	       0 B/op	       0 allocs/op
+BenchmarkMatrix_AppendValueSize/mode=BTree/cap=100000/T=64B-10       	 2395279	        99.08 ns/op	  10093153 records/s	       0 B/op	       0 allocs/op
+BenchmarkMatrix_AppendValueSize/mode=BTree/cap=100000/T=256B-10      	 2307404	       103.4 ns/op	   9672560 records/s	       0 B/op	       0 allocs/op
+BenchmarkMatrix_AppendValueSize/mode=Ordered/cap=1024/T=16B-10       	 9051764	        26.55 ns/op	  37668833 records/s	       0 B/op	       0 allocs/op
+BenchmarkMatrix_AppendValueSize/mode=Ordered/cap=1024/T=64B-10       	 8777596	        28.07 ns/op	  35622987 records/s	       0 B/op	       0 allocs/op
+BenchmarkMatrix_AppendValueSize/mode=Ordered/cap=1024/T=256B-10      	 7717362	        31.08 ns/op	  32175774 records/s	       0 B/op	       0 allocs/op
+BenchmarkMatrix_AppendValueSize/mode=Ordered/cap=65536/T=16B-10      	 8998551	        26.70 ns/op	  37453511 records/s	       0 B/op	       0 allocs/op
+BenchmarkMatrix_AppendValueSize/mode=Ordered/cap=65536/T=64B-10      	 8545334	        32.30 ns/op	  30955289 records/s	       0 B/op	       0 allocs/op
+BenchmarkMatrix_AppendValueSize/mode=Ordered/cap=65536/T=256B-10     	 7660542	        31.43 ns/op	  31814258 records/s	       0 B/op	       0 allocs/op
+BenchmarkMatrix_AppendValueSize/mode=Ordered/cap=100000/T=16B-10     	 8894845	        26.91 ns/op	  37167213 records/s	       0 B/op	       0 allocs/op
+BenchmarkMatrix_AppendValueSize/mode=Ordered/cap=100000/T=64B-10     	 8500351	        28.08 ns/op	  35611401 records/s	       0 B/op	       0 allocs/op
+BenchmarkMatrix_AppendValueSize/mode=Ordered/cap=100000/T=256B-10    	 7566114	        31.40 ns/op	  31842931 records/s	       0 B/op	       0 allocs/op
+BenchmarkMatrix_AppendIndexes/mode=None/idx=none-10                  	 9306564	        26.39 ns/op	  37889338 records/s	       0 B/op	       0 allocs/op
+BenchmarkMatrix_AppendIndexes/mode=None/idx=unique-10                	 2420007	       100.8 ns/op	   9921813 records/s	       0 B/op	       0 allocs/op
+BenchmarkMatrix_AppendIndexes/mode=None/idx=unique+multi(low)-10     	 1887169	       127.1 ns/op	   7865897 records/s	       1 B/op	       0 allocs/op
+BenchmarkMatrix_AppendIndexes/mode=None/idx=unique+multi(high)-10    	 1692438	       142.7 ns/op	   7009532 records/s	       0 B/op	       0 allocs/op
+BenchmarkMatrix_AppendIndexes/mode=BTree/idx=none-10                 	 2520640	        95.64 ns/op	  10456318 records/s	       1 B/op	       0 allocs/op
+BenchmarkMatrix_AppendIndexes/mode=BTree/idx=unique-10               	 1360411	       177.1 ns/op	   5646429 records/s	       2 B/op	       0 allocs/op
+BenchmarkMatrix_AppendIndexes/mode=BTree/idx=unique+multi(low)-10    	 1000000	       204.0 ns/op	   4901674 records/s	       6 B/op	       0 allocs/op
+BenchmarkMatrix_AppendIndexes/mode=BTree/idx=unique+multi(high)-10   	 1000000	       222.6 ns/op	   4492156 records/s	       4 B/op	       0 allocs/op
+BenchmarkMatrix_AppendIndexes/mode=Ordered/idx=none-10               	 8934262	        27.05 ns/op	  36971317 records/s	       0 B/op	       0 allocs/op
+BenchmarkMatrix_AppendIndexes/mode=Ordered/idx=unique-10             	 2369743	       102.9 ns/op	   9716004 records/s	       0 B/op	       0 allocs/op
+BenchmarkMatrix_AppendIndexes/mode=Ordered/idx=unique+multi(low)-10  	 1857145	       130.0 ns/op	   7690406 records/s	       1 B/op	       0 allocs/op
+BenchmarkMatrix_AppendIndexes/mode=Ordered/idx=unique+multi(high)-10 	 1659170	       144.1 ns/op	   6940631 records/s	       0 B/op	       0 allocs/op
+BenchmarkMatrix_Queries/point/After-10                               	 1822039	       132.7 ns/op	       0 B/op	       0 allocs/op
+BenchmarkMatrix_Queries/point/UniqueGet-10                           	 6892168	        35.07 ns/op	       0 B/op	       0 allocs/op
+BenchmarkMatrix_Queries/point/Get-10                                 	24344886	         9.938 ns/op	       0 B/op	       0 allocs/op
+BenchmarkMatrix_Queries/point/Latest-10                              	24492501	         9.762 ns/op	       0 B/op	       0 allocs/op
+BenchmarkMatrix_Queries/point/AsOf-10                                	 1797349	       131.7 ns/op	       0 B/op	       0 allocs/op
+BenchmarkMatrix_Queries/point/Before-10                              	 1800405	       133.1 ns/op	       0 B/op	       0 allocs/op
+BenchmarkMatrix_Queries/batch/ReadFrom/n=1/prealloc=true-10          	14507097	        16.69 ns/op	  59930512 records/s	       0 B/op	       0 allocs/op
+BenchmarkMatrix_Queries/batch/Range/n=1/prealloc=true-10             	 1662310	       146.6 ns/op	   6820155 records/s	       0 B/op	       0 allocs/op
+BenchmarkMatrix_Queries/batch/PrevN/n=1/prealloc=true-10             	 1733335	       137.5 ns/op	   7270307 records/s	       0 B/op	       0 allocs/op
+BenchmarkMatrix_Queries/batch/NextN/n=1/prealloc=true-10             	 1735617	       162.2 ns/op	   6165238 records/s	       0 B/op	       0 allocs/op
+BenchmarkMatrix_Queries/batch/MultiGet/n=1/prealloc=true-10          	 9999652	        23.89 ns/op	  41861756 records/s	       0 B/op	       0 allocs/op
+BenchmarkMatrix_Queries/batch/Range/n=1/prealloc=false-10            	 1447272	       166.0 ns/op	   6022507 records/s	      80 B/op	       1 allocs/op
+BenchmarkMatrix_Queries/batch/PrevN/n=1/prealloc=false-10            	 1515699	       156.4 ns/op	   6393203 records/s	      80 B/op	       1 allocs/op
+BenchmarkMatrix_Queries/batch/NextN/n=1/prealloc=false-10            	 1546356	       155.8 ns/op	   6418815 records/s	      80 B/op	       1 allocs/op
+BenchmarkMatrix_Queries/batch/MultiGet/n=1/prealloc=false-10         	 7148698	        32.90 ns/op	  30394264 records/s	      80 B/op	       1 allocs/op
+BenchmarkMatrix_Queries/batch/ReadFrom/n=1/prealloc=false-10         	 9632960	        24.59 ns/op	  40673661 records/s	      80 B/op	       1 allocs/op
+BenchmarkMatrix_Queries/batch/ReadFrom/n=8/prealloc=true-10          	 5058804	        47.41 ns/op	 168737387 records/s	       0 B/op	       0 allocs/op
+BenchmarkMatrix_Queries/batch/Range/n=8/prealloc=true-10             	 1000000	       222.7 ns/op	  35919876 records/s	       0 B/op	       0 allocs/op
+BenchmarkMatrix_Queries/batch/PrevN/n=8/prealloc=true-10             	  986570	       212.2 ns/op	  37703867 records/s	       0 B/op	       0 allocs/op
+BenchmarkMatrix_Queries/batch/NextN/n=8/prealloc=true-10             	 1000000	       200.8 ns/op	  39830876 records/s	       0 B/op	       0 allocs/op
+BenchmarkMatrix_Queries/batch/MultiGet/n=8/prealloc=true-10          	 4286377	        55.85 ns/op	 143230072 records/s	       0 B/op	       0 allocs/op
+BenchmarkMatrix_Queries/batch/PrevN/n=8/prealloc=false-10            	  980368	       243.2 ns/op	  32892558 records/s	     640 B/op	       1 allocs/op
+BenchmarkMatrix_Queries/batch/NextN/n=8/prealloc=false-10            	  920715	       233.9 ns/op	  34195874 records/s	     640 B/op	       1 allocs/op
+BenchmarkMatrix_Queries/batch/MultiGet/n=8/prealloc=false-10         	 2766460	        85.96 ns/op	  93069455 records/s	     640 B/op	       1 allocs/op
+BenchmarkMatrix_Queries/batch/ReadFrom/n=8/prealloc=false-10         	 3137442	        77.12 ns/op	 103732379 records/s	     640 B/op	       1 allocs/op
+BenchmarkMatrix_Queries/batch/Range/n=8/prealloc=false-10            	  973060	       245.3 ns/op	  32617937 records/s	     640 B/op	       1 allocs/op
+BenchmarkMatrix_Queries/batch/NextN/n=64/prealloc=true-10            	  366004	       663.0 ns/op	  96527782 records/s	       0 B/op	       0 allocs/op
+BenchmarkMatrix_Queries/batch/MultiGet/n=64/prealloc=true-10         	  762801	       312.6 ns/op	 204757821 records/s	       0 B/op	       0 allocs/op
+BenchmarkMatrix_Queries/batch/ReadFrom/n=64/prealloc=true-10         	  823138	       292.8 ns/op	 218553442 records/s	       0 B/op	       0 allocs/op
+BenchmarkMatrix_Queries/batch/Range/n=64/prealloc=true-10            	  359467	       681.4 ns/op	  93929315 records/s	       0 B/op	       0 allocs/op
+BenchmarkMatrix_Queries/batch/PrevN/n=64/prealloc=true-10            	  341504	       718.6 ns/op	  89067790 records/s	       0 B/op	       0 allocs/op
+BenchmarkMatrix_Queries/batch/PrevN/n=64/prealloc=false-10           	  255385	       862.3 ns/op	  74220554 records/s	    5376 B/op	       1 allocs/op
+BenchmarkMatrix_Queries/batch/NextN/n=64/prealloc=false-10           	  274016	       823.3 ns/op	  77732394 records/s	    5376 B/op	       1 allocs/op
+BenchmarkMatrix_Queries/batch/MultiGet/n=64/prealloc=false-10        	  470230	       477.5 ns/op	 134040264 records/s	    5376 B/op	       1 allocs/op
+BenchmarkMatrix_Queries/batch/ReadFrom/n=64/prealloc=false-10        	  487960	       454.8 ns/op	 140714380 records/s	    5376 B/op	       1 allocs/op
+BenchmarkMatrix_Queries/batch/Range/n=64/prealloc=false-10           	  271276	       841.4 ns/op	  76059983 records/s	    5376 B/op	       1 allocs/op
+BenchmarkMatrix_Queries/batch/MultiGet/n=256/prealloc=true-10        	  200739	      1184 ns/op	 216139843 records/s	       0 B/op	       0 allocs/op
+BenchmarkMatrix_Queries/batch/ReadFrom/n=256/prealloc=true-10        	  209154	      1134 ns/op	 225730535 records/s	       0 B/op	       0 allocs/op
+BenchmarkMatrix_Queries/batch/Range/n=256/prealloc=true-10           	  108393	      2209 ns/op	 115912483 records/s	       0 B/op	       0 allocs/op
+BenchmarkMatrix_Queries/batch/PrevN/n=256/prealloc=true-10           	  105258	      2299 ns/op	 111362166 records/s	       0 B/op	       0 allocs/op
+BenchmarkMatrix_Queries/batch/NextN/n=256/prealloc=true-10           	  106153	      2209 ns/op	 115899005 records/s	       0 B/op	       0 allocs/op
+BenchmarkMatrix_Queries/batch/Range/n=256/prealloc=false-10          	   87198	      2644 ns/op	  96832381 records/s	   20480 B/op	       1 allocs/op
+BenchmarkMatrix_Queries/batch/PrevN/n=256/prealloc=false-10          	   87162	      2734 ns/op	  93642146 records/s	   20480 B/op	       1 allocs/op
+BenchmarkMatrix_Queries/batch/NextN/n=256/prealloc=false-10          	   90745	      2628 ns/op	  97397534 records/s	   20480 B/op	       1 allocs/op
+BenchmarkMatrix_Queries/batch/MultiGet/n=256/prealloc=false-10       	  144562	      1634 ns/op	 156646276 records/s	   20480 B/op	       1 allocs/op
+BenchmarkMatrix_Queries/batch/ReadFrom/n=256/prealloc=false-10       	  149268	      1561 ns/op	 163987625 records/s	   20480 B/op	       1 allocs/op
+BenchmarkMatrix_Queries/batch/ReadFrom/n=4096/prealloc=true-10       	   12912	     18714 ns/op	 218868212 records/s	       0 B/op	       0 allocs/op
+BenchmarkMatrix_Queries/batch/Range/n=4096/prealloc=true-10          	    7052	     33250 ns/op	 123187270 records/s	       0 B/op	       0 allocs/op
+BenchmarkMatrix_Queries/batch/PrevN/n=4096/prealloc=true-10          	    7124	     33202 ns/op	 123366674 records/s	       0 B/op	       0 allocs/op
+BenchmarkMatrix_Queries/batch/NextN/n=4096/prealloc=true-10          	    7106	     33345 ns/op	 122837777 records/s	       0 B/op	       0 allocs/op
+BenchmarkMatrix_Queries/batch/MultiGet/n=4096/prealloc=true-10       	   10000	     20071 ns/op	 204077777 records/s	       0 B/op	       0 allocs/op
+BenchmarkMatrix_Queries/batch/MultiGet/n=4096/prealloc=false-10      	    8004	     25100 ns/op	 163186662 records/s	  327680 B/op	       1 allocs/op
+BenchmarkMatrix_Queries/batch/ReadFrom/n=4096/prealloc=false-10      	    8696	     23754 ns/op	 172434631 records/s	  327680 B/op	       1 allocs/op
+BenchmarkMatrix_Queries/batch/Range/n=4096/prealloc=false-10         	    6108	     38790 ns/op	 105593440 records/s	  327680 B/op	       1 allocs/op
+BenchmarkMatrix_Queries/batch/PrevN/n=4096/prealloc=false-10         	    5674	     38353 ns/op	 106798141 records/s	  316170 B/op	       1 allocs/op
+BenchmarkMatrix_Queries/batch/NextN/n=4096/prealloc=false-10         	    5832	     38773 ns/op	 105641132 records/s	  327680 B/op	       1 allocs/op
+BenchmarkMatrix_Queries/scan/Entries/16K-10                          	    1335	    181464 ns/op	  90289660 records/s	  327752 B/op	       4 allocs/op
+BenchmarkMatrix_ContendedAppend/mode=None-10                         	 2343496	       102.3 ns/op	   9774569 records/s	       1 B/op	       0 allocs/op
+BenchmarkMatrix_ContendedAppend/mode=BTree-10                        	 1595262	       149.8 ns/op	   6673957 records/s	      46 B/op	       0 allocs/op
+BenchmarkMatrix_ContendedAppend/mode=Ordered-10                      	 2525296	        94.68 ns/op	  10561511 records/s	       1 B/op	       0 allocs/op
+BenchmarkWriteLatency/mode=None/readers=1/read=64-10                 	   10000	     59916 ns/op	      5000 p50-ns	    477708 p99-ns	       0 B/op	       0 allocs/op
+BenchmarkWriteLatency/mode=None/readers=1/read=4096-10               	   17900	     13302 ns/op	        42.00 p50-ns	   1017041 p99-ns	      18 B/op	       0 allocs/op
+BenchmarkWriteLatency/mode=None/readers=2/read=64-10                 	   10000	     29731 ns/op	      7875 p50-ns	    211667 p99-ns	       1 B/op	       0 allocs/op
+BenchmarkWriteLatency/mode=None/readers=2/read=4096-10               	   10000	    740519 ns/op	   1049541 p50-ns	   1064750 p99-ns	      67 B/op	       0 allocs/op
+BenchmarkWriteLatency/mode=None/readers=8/read=64-10                 	   10000	     40142 ns/op	      2791 p50-ns	    711208 p99-ns	       4 B/op	       0 allocs/op
+BenchmarkWriteLatency/mode=None/readers=8/read=4096-10               	   10000	    994503 ns/op	   1052916 p50-ns	   1072667 p99-ns	     230 B/op	       0 allocs/op
+BenchmarkWriteLatency/mode=None/readers=32/read=64-10                	    4392	     58286 ns/op	       291.0 p50-ns	   1199625 p99-ns	      40 B/op	       0 allocs/op
+BenchmarkWriteLatency/mode=None/readers=32/read=4096-10              	     345	   1055931 ns/op	   1055500 p50-ns	   1071292 p99-ns	   29444 B/op	       0 allocs/op
+BenchmarkWriteLatency/mode=BTree/readers=1/read=64-10                	   16969	     14489 ns/op	       166.0 p50-ns	    260250 p99-ns	      35 B/op	       0 allocs/op
+BenchmarkWriteLatency/mode=BTree/readers=1/read=4096-10              	   10000	     29332 ns/op	       125.0 p50-ns	   1029541 p99-ns	      67 B/op	       0 allocs/op
+BenchmarkWriteLatency/mode=BTree/readers=2/read=64-10                	   10000	     21883 ns/op	       167.0 p50-ns	    680542 p99-ns	      35 B/op	       0 allocs/op
+BenchmarkWriteLatency/mode=BTree/readers=2/read=4096-10              	     456	    765376 ns/op	   1062416 p50-ns	   1097083 p99-ns	    1484 B/op	       0 allocs/op
+BenchmarkWriteLatency/mode=BTree/readers=8/read=64-10                	    5349	     41552 ns/op	       167.0 p50-ns	   1148583 p99-ns	      43 B/op	       0 allocs/op
+BenchmarkWriteLatency/mode=BTree/readers=8/read=4096-10              	     454	   1005905 ns/op	   1085125 p50-ns	   1110208 p99-ns	    5824 B/op	       0 allocs/op
+BenchmarkWriteLatency/mode=BTree/readers=32/read=64-10               	   10000	     84318 ns/op	       167.0 p50-ns	   1813292 p99-ns	      52 B/op	       0 allocs/op
+BenchmarkWriteLatency/mode=BTree/readers=32/read=4096-10             	     298	    897339 ns/op	   1091750 p50-ns	   1129375 p99-ns	   35249 B/op	       0 allocs/op
+BenchmarkWriteLatency/mode=Ordered/readers=1/read=64-10              	   10000	     46045 ns/op	        84.00 p50-ns	    426958 p99-ns	       0 B/op	       0 allocs/op
+BenchmarkWriteLatency/mode=Ordered/readers=1/read=4096-10            	   17110	     14037 ns/op	        42.00 p50-ns	   1020917 p99-ns	      19 B/op	       0 allocs/op
+BenchmarkWriteLatency/mode=Ordered/readers=2/read=64-10              	   10000	     45584 ns/op	      6709 p50-ns	    631708 p99-ns	       1 B/op	       0 allocs/op
+BenchmarkWriteLatency/mode=Ordered/readers=2/read=4096-10            	   10000	    485128 ns/op	        84.00 p50-ns	   1072417 p99-ns	      66 B/op	       0 allocs/op
+BenchmarkWriteLatency/mode=Ordered/readers=8/read=64-10              	   10000	     70196 ns/op	      7833 p50-ns	   1170916 p99-ns	       5 B/op	       0 allocs/op
+BenchmarkWriteLatency/mode=Ordered/readers=8/read=4096-10            	   10000	    886663 ns/op	   1057875 p50-ns	   1082000 p99-ns	     262 B/op	       0 allocs/op
+BenchmarkWriteLatency/mode=Ordered/readers=32/read=64-10             	    3172	     73408 ns/op	        84.00 p50-ns	   1419625 p99-ns	      56 B/op	       0 allocs/op
+BenchmarkWriteLatency/mode=Ordered/readers=32/read=4096-10           	    2722	   1024904 ns/op	   1057833 p50-ns	   1090792 p99-ns	    3732 B/op	       0 allocs/op
 PASS
-ok  	github.com/fedorwk/temporal/temporal	55.246s
+ok  	github.com/fedorwk/temporal	75.576s
