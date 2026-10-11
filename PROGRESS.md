@@ -13,7 +13,8 @@ Plan: `IMPLEMENTATION_PLAN.md`. Spec: `temporal_series_requirements.md`. Decisio
 | 5 Batch time reads, TimeCursor pagination, Entries | done |
 | 6 Key indexes (single-record Append) | done |
 | 7 AppendBatch | done |
-| 8 Subscriptions | next |
+| 8 Subscriptions | done |
+| 9 Derived series and watermark propagation | next |
 
 ## Session 1 — Foundations and ring
 
@@ -195,5 +196,31 @@ Tests per requirement:
 Open questions: none.
 
 Known gaps:
-- W-002's "single notification" is structurally one `notify()` call per batch; it becomes observable and tested with subscriptions in S8.
+- W-002's "single notification": tested in S8 by `TestNotify_OncePerTransaction`.
 - B-tree node churn costs ~0.06 allocs/record (S7-05); to be quantified in S11.
+
+## Session 8 — Subscriptions
+
+Done:
+- `subscription.go`: `StartFrom` (`StartOldest`, `StartNext`, `StartAt`), `SubscribeOptions`, `Subscribe`, `Subscription` (`Next`, `TryNext`, `Seek`, `Cursor`, `Skipped`, `Wake`, `Close`), coalesced wake channels (buffer 1), copy-on-write subscriber list in `atomic.Pointer`, allocation-free non-blocking `notify` after unlock (Append, AppendBatch, Clear, Close), shared `poll` with the P-12 snapshot.
+- `Stats.Subscribers`.
+- `scripts/check.sh`: test timeouts.
+
+Tests per requirement:
+- S-001, S-002, P-07: `TestSubscribe_StartPositions`
+- T-007, S-003, S-010: `TestSubscription_ReplayAcrossBatches`
+- S-004, S-005, E-008, T-007: `TestSubscription_Lag` (LagFail contents and unchanged cursor, LagSkip and `Skipped()`, exactly one record behind, StartAt an evicted ref)
+- S-006, T-016: `TestSubscription_ResetAndSeek` (ErrReset until Seek; every Seek variant incl. clamp, zero ref, old and future generation)
+- T-019, E-013, E-014, S-008, S-009: `TestSubscription_UnblockAndClose` (ctx cancel, cancelled ctx with data, Subscription.Close, Series.Close drain then ErrClosed, blocked Next woken by Series.Close, subscribe on closed Series)
+- S-007, S-011, T-018, §17.3: `TestSubscription_WakeCoalescing` (50 stalled subscribers never block 20k appends; wake buffer exactly 1; SetWatermark does not wake)
+- W-002, §9.4: `TestNotify_OncePerTransaction` (temporaldebug: one per committed batch; none for failed or fully dropped transactions)
+- T-018, T-001: `TestSubscription_Stress` (4 producers mixing Append/AppendBatch, 4 consumers; every record exactly once, in order)
+- S-013, Q-017: `TestSubscription_ModeIndependence`
+- T-015, S-005: `TestSubscription_ClonePanic`
+- T-026, W-009: `TestAllocs_Subscriptions` (Append with 8 subscribers, TryNext, Next with data: 0 allocs)
+- Exit gate: `go test -race -count=20 -run Subscription` green.
+- Mutation checks: the lag boundary (found a gap: added the "one record behind" case), LagSkip accounting, and a blocking wake send (producer test times out) are all caught.
+
+Open questions: none.
+
+Known gaps: subscriptions are not yet part of the random model test; S10's fuzz target adds Subscribe/TryNext/Seek.

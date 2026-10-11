@@ -72,6 +72,9 @@ type Series[T any] struct {
 	watermark   Timestamp
 	closed      bool
 	n           counters
+
+	subs        atomic.Pointer[[]*subscriber] // copy-on-write; read without mu by notify
+	dbgNotifies atomic.Uint64                 // notify calls, counted in temporaldebug builds only
 }
 
 // New creates a Series. It returns ErrInvalidConfig for a malformed config.
@@ -399,10 +402,6 @@ func (s *Series[T]) Close() error {
 	s.notify()
 	return nil
 }
-
-// notify wakes subscribers. It must be called after the mutex is released.
-// Subscriptions arrive in Session 8; until then it does nothing.
-func (s *Series[T]) notify() {}
 
 // Len returns the number of retained records.
 func (s *Series[T]) Len() int {

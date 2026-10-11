@@ -64,6 +64,7 @@ func (s *Series[T]) Stats() Stats {
 		MinEvicted:           s.env.min,
 		MaxEvicted:           s.env.max,
 		Watermark:            s.watermark,
+		Subscribers:          s.subscriberCount(),
 	}
 	if s.hasObserved {
 		st.MaxObservedEventTime = s.maxObserved

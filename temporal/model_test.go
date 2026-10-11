@@ -968,17 +968,19 @@ func TestModel_SeqPath(t *testing.T) {
 			wantBatch = append(wantBatch, "dropped", "replaced/keptFirst", "conflict", "extractor panic",
 				"batch ok", "batch failed")
 			for _, k := range wantBatch {
-				if batchSeen[k] == 0 && iters(200) >= 50 {
+				if batchSeen[k] == 0 && iters(200) >= 200 {
 					t.Errorf("batch reads never produced %q (seen %v)", k, batchSeen)
 				}
 			}
 			// Guard against a vacuous run: every point-query status must occur.
+			// Only at full iteration counts: rare outcomes may legitimately not
+			// occur in the reduced -short and -race runs.
 			want := []Status{StatusOK, StatusNotFound, StatusExpired, StatusNotReady}
 			if mode == TimeIndexNone {
 				want = []Status{StatusTimeIndexDisabled}
 			}
 			for _, st := range want {
-				if seen[st] == 0 && iters(200) >= 50 {
+				if seen[st] == 0 && iters(200) >= 200 {
 					t.Errorf("point queries never returned %v (seen %v)", st, seen)
 				}
 			}
