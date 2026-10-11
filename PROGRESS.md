@@ -16,7 +16,8 @@ Plan: `IMPLEMENTATION_PLAN.md`. Spec: `temporal_series_requirements.md`. Decisio
 | 8 Subscriptions | done |
 | 9 Derived series and watermark propagation | done |
 | 10 Verification hardening | done |
-| 11 Benchmarks, allocation acceptance, docs, DoD audit | next |
+| 11 Benchmarks, allocation acceptance, docs, DoD audit | done |
+| 12 (optional) Trace replay fixtures | needs captured feed data |
 
 ## Session 1 — Foundations and ring
 
@@ -270,3 +271,51 @@ Tests per requirement:
 Open questions: none new.
 
 Known gaps: none for S10 scope.
+
+## Session 11 — Benchmarks, allocation acceptance, docs, DoD audit
+
+Done:
+- `bench_test.go`: §22.3 comparison (`BenchmarkCompare_*`: Append, AppendBatch 8/64/256/1024, ReadFrom, Subscription.Next, AsOf, Range; records/s, ns/op, B/op, allocs/op), §22.1 subset (`BenchmarkMatrix_*`: disorder and ties, value size and capacity incl. non-power-of-two, key indexes with high/low cardinality, the query set at batch sizes 1-4096 with nil and preallocated dst, paged Entries scan, contended Append), `BenchmarkWriteLatency` (p50/p99 under 1/2/8/32 readers and read sizes 64/4096), `TestMemoryPerRow`, `TestSustainedIngestionHeapBounded` (T-009).
+- `alloc_test.go`: `TestAllocAcceptance`, the consolidated §22.2 table (T-026), all exactly zero.
+- `example_test.go`: five testable examples mirroring §25 (raw series with dedup and AsOf, statuses, Range+Continue, subscription lag handling, StartDerived).
+- `doc.go`: complete package documentation (identity, time and late events, event-time capability, statuses, watermarks, key indexes, writes, ownership and Clone, subscriptions and derivation, synchronization model, allocation).
+- `scripts/bench.sh`, `scripts/benchcmp.py`; results in `BENCHMARKS.md` and `bench/`.
+
+Key results (BENCHMARKS.md): Append 25.6 ns (None) vs 95.9 ns (BTree); Q-017 confirmed (ReadFrom p=0.06, Subscription.Next p=0.43); B-tree write path ~0.066 allocs/record; 64 / 99 / 108 / 93 bytes per row for None / BTree / +unique / +multi; heap bounded under sustained ingestion; writer p99 up to ~1-2 ms under tight-loop readers (S11-03).
+
+Open questions:
+- Writer tail latency under polling readers (BENCHMARKS.md §4): keep `sync.Mutex` with usage guidance, lower the default MaxReadBatch, or run the §22.4 RWMutex experiment?
+- Deriver watermark propagation on quiet markets (S9 open question).
+
+Known gaps:
+- Session 12 (trace replay fixtures, T-008) needs captured feed data.
+
+## Definition of Done audit (spec §31)
+
+General:
+
+| §31 item | Evidence |
+|---|---|
+| No public API exposes memory that a later append can overwrite. | Copy-out on every read path (lock audit in DECISIONS.md); `TestRaceStress_NoTornReads` (T-005); `TestClone_DeepOwnershipAllPaths` (21 read paths). Batch reads append into caller-owned `dst`; `ReadInfo`/`Entry` hold no references into the ring. |
+| Every query reports Status or ReadInfo exactly per §7; status matrix and precedence tests pass. | `TestPointQueries_StatusMatrix`, `TestPointQueries_Precedence`, `TestContinue_CursorValidation`, `TestGet_StatusMatrix`, `TestReadFrom`; every status of every query compared with the model in `TestModel_SeqPath`/`FuzzSeries`. |
+| `go test -race` passes under dedicated reader/writer/subscriber stress tests. | `scripts/check.sh` (race step); `TestRaceStress_NoTornReads`, `TestSubscription_Stress`, `TestAppend_Concurrent`; `-race -count=20 -run Subscription` and `-race -count=10 -run Derived` gates. |
+| Randomized reference-model tests prove ring, time index and key indexes equivalent, incl. all conflict policies and Clear. | `TestModel_SeqPath`, `TestModel_LongRuns`, `FuzzSeries` (model incl. all four policies, multi indexes, Clear, batches, subscriptions; CheckInvariants after every op); `TestTimeIndex_Differential`. |
+| AsOf and range queries correct for equal timestamps, late events, SourceEpoch changes, wraparound and generations. | `TestPointQueries_DuplicatesAndLate`, `TestRange_PaginationConcatenates`, `TestAppend_SourceSeqPolicy`, `TestModel_LongRuns` (capacities 1..8, thousands of wraps), `TestGet_StatusMatrix`/`TestContinue_CursorValidation` (generations). |
+| Subscribers process every record within retention and report deterministic lag or reset. | `TestSubscription_Stress`, `TestSubscription_ReplayAcrossBatches`, `TestSubscription_Lag`, `TestSubscription_ResetAndSeek`, subscription model in `FuzzSeries`. |
+| Failed appends, incl. recovered callback panics, leave no state change. | `TestAppend_ClonePanicNoStateChange`, `TestIndex_ExtractorPanicNoStateChange`, `TestAppendBatch_PanicNoStateChange`, `TestAppend_InvalidInput`, `TestAppendBatch_IntraBatchConflicts/Reject`; model compares Stats after every failed append. Only diagnostic counters move (P-04). |
+| Steady-state hot paths meet the §22.2 allocation targets. | `TestAllocAcceptance` (exact counting, every §22.2 item = 0); B-tree write path ~0.06 allocs/record measured and reported (S7-05, BENCHMARKS.md). |
+| No serialization, reflection, `[]byte` keys, or T/K to `interface{}` on normal paths. | `TestStructure_Imports` bans `reflect`/`unsafe`; keys stay typed in per-index scratch (S6-01); `fmt.Sprint(k)` only on the conflict error path (P-18); `CallbackPanicError.Value any` only on the panic path. |
+| Synchronization model documented in package comments and enforced structurally. | `doc.go` "Synchronization model"; `TestStructure_NoLockFields`, `TestStructure_BTreeNoLocks`; lock-discipline audit in DECISIONS.md. |
+
+Event-time ordering capability:
+
+| §31 item | Evidence |
+|---|---|
+| Series core has no direct dependency on a concrete B-tree API (T-025a). | `TestStructure_Imports`. |
+| btreeTimeIndex and the TimeIndexNone path pass the common suite (T-021..T-023). | `TestTimeIndex_*` (btree vs slice reference), `TestPointQueries_NoneNoStateChange`, `TestBatch_NoneNoStateChange`, `TestTimeIndex_None`. |
+| No index implementation has its own lock (T-025b). | `TestStructure_NoLockFields`. |
+| One Series has exactly one consistency boundary (C-001). | `Series.mu` is the only lock touching Series state (lock audit); index types have no lock fields (T-025b). |
+| ReadFrom and subscriptions work fully without an event-time index (T-022). | `TestModeEquivalence`, `TestSubscription_ModeIndependence`, model runs in None mode. |
+| Disabling the event-time index does not change Seq, Gen or retention semantics (T-022). | `TestModeEquivalence` (identical results and Stats except time-only fields), `TestIndex_ModeIndependence`. |
+| Public API requires no B-tree types; continuation uses the opaque TimeCursor (TI-013). | `TimeCursor` fields are unexported; the btree import is confined to one file (T-025a). |
+| Benchmarks measure event-time indexing cost separately (22.3). | `BenchmarkCompare_*` (None vs BTree), BENCHMARKS.md. |
