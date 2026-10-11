@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/fedorwk/temporal/temporal"
+	"github.com/fedorwk/temporal"
 )
 
 type Trade struct {

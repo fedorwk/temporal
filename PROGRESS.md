@@ -23,13 +23,13 @@ Plan: `IMPLEMENTATION_PLAN.md`. Spec: `temporal_series_requirements.md`. Decisio
 
 Done:
 - `go.mod` (`github.com/fedorwk/temporal`, `go 1.23`), `scripts/check.sh` (gofmt, vet in both tag sets, `go test -race`, `go test -tags temporaldebug`).
-- `temporal/doc.go`: synchronization model stub.
-- `temporal/types.go`: Seq/SeqNone/seqMax, Gen, Ref, Timestamp + sentinels, FromTime/Time, SourceEpoch, Flags + masks, InputMeta, Meta, Entry, Input, Cursor, timeKey/keyLess.
-- `temporal/status.go`: Status (+String, Err), all sentinel errors, LagError, ConflictError, CallbackPanicError, ReadInfo, TimeCursor (+makeCursor/decode), Outcome, AppendResult.
-- `temporal/config.go`: all enums, Config[T], `validate()` → normalized `config[T]`.
-- `temporal/debug_on.go` / `debug_off.go`: `debugAssert`, `assertf`.
-- `temporal/ring.go`: struct-of-arrays `ring[T]` (32-byte `slotMeta`, debug-only Seq array), `bounds`.
-- `temporal/key_index.go`: `Index[T]` stub (S6 completes it).
+- `doc.go`: synchronization model stub.
+- `types.go`: Seq/SeqNone/seqMax, Gen, Ref, Timestamp + sentinels, FromTime/Time, SourceEpoch, Flags + masks, InputMeta, Meta, Entry, Input, Cursor, timeKey/keyLess.
+- `status.go`: Status (+String, Err), all sentinel errors, LagError, ConflictError, CallbackPanicError, ReadInfo, TimeCursor (+makeCursor/decode), Outcome, AppendResult.
+- `config.go`: all enums, Config[T], `validate()` → normalized `config[T]`.
+- `debug_on.go` / `debug_off.go`: `debugAssert`, `assertf`.
+- `ring.go`: struct-of-arrays `ring[T]` (32-byte `slotMeta`, debug-only Seq array), `bounds`.
+- `key_index.go`: `Index[T]` stub (S6 completes it).
 
 Tests per requirement:
 - §6.1 Timestamp: `TestTimestamp_RoundTrip`, `TestTimestamp_Sentinels`

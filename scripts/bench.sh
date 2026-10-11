@@ -14,7 +14,7 @@ COUNT=${COUNT:-10}
 BENCHTIME=${BENCHTIME:-200ms}
 
 go test -run '^$' -bench '^BenchmarkCompare_' -benchmem -count "$COUNT" -benchtime "$BENCHTIME" \
-  -timeout 60m ./temporal | tee bench/compare.txt
+  -timeout 60m . | tee bench/compare.txt
 
 if command -v benchstat >/dev/null 2>&1; then
   benchstat -col /mode bench/compare.txt | tee bench/compare.benchstat.txt
@@ -24,6 +24,6 @@ fi
 
 if [[ "${1:-}" == "matrix" ]]; then
   go test -run '^$' -bench '^Benchmark(Matrix_|WriteLatency)' -benchmem -count 1 -benchtime "$BENCHTIME" \
-    -timeout 60m ./temporal | tee bench/matrix.txt
-  go test -run 'TestMemoryPerRow|TestSustainedIngestionHeapBounded' -v -count 1 ./temporal | tee bench/memory.txt
+    -timeout 60m . | tee bench/matrix.txt
+  go test -run 'TestMemoryPerRow|TestSustainedIngestionHeapBounded' -v -count 1 . | tee bench/memory.txt
 fi
