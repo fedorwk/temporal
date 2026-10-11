@@ -14,7 +14,7 @@ Plan: `IMPLEMENTATION_PLAN.md`. Spec: `temporal_series_requirements.md`. Decisio
 | 6 Key indexes (single-record Append) | done |
 | 7 AppendBatch | done |
 | 8 Subscriptions | done |
-| 9 Derived series and watermark propagation | done |
+| 9 Derived series and watermark propagation | done, then superseded by S12-02 (derivation moved out) |
 | 10 Verification hardening | done |
 | 11 Benchmarks, allocation acceptance, docs, DoD audit | done |
 | 12 (optional) Trace replay fixtures | needs captured feed data |
@@ -245,7 +245,7 @@ Tests per requirement:
 - Mutation checks: propagating the watermark when not caught up, and advancing the cursor on a failed append, are both caught.
 
 Open questions:
-- Per §17.3, watermark changes do not wake subscribers, so a deriver propagates a new source watermark only when the next source record arrives. On a quiet market (no trades for a while) a derived candle series' watermark therefore stays behind the raw series. Implemented as specified; a possible extension is to let derivers (not general subscribers) also wake on watermark changes.
+- (Resolved by S12-02: derive loops are the caller's; a loop that needs to forward watermarks on quiet markets can also select on its own timer.) Per §17.3, watermark changes do not wake subscribers, so a loop forwards a new source watermark only when the next source record arrives.
 
 Known gaps: none for S9 scope.
 
@@ -285,7 +285,6 @@ Key results (BENCHMARKS.md): Append 25.6 ns (None) vs 95.9 ns (BTree); Q-017 con
 
 Open questions:
 - Writer tail latency under polling readers (BENCHMARKS.md §4): keep `sync.Mutex` with usage guidance, lower the default MaxReadBatch, or run the §22.4 RWMutex experiment?
-- Deriver watermark propagation on quiet markets (S9 open question).
 
 Known gaps:
 - Session 12 (trace replay fixtures, T-008) needs captured feed data.
@@ -302,7 +301,7 @@ General:
 | Randomized reference-model tests prove ring, time index and key indexes equivalent, incl. all conflict policies and Clear. | `TestModel_SeqPath`, `TestModel_LongRuns`, `FuzzSeries` (model incl. all four policies, multi indexes, Clear, batches, subscriptions; CheckInvariants after every op); `TestTimeIndex_Differential`. |
 | AsOf and range queries correct for equal timestamps, late events, SourceEpoch changes, wraparound and generations. | `TestPointQueries_DuplicatesAndLate`, `TestRange_PaginationConcatenates`, `TestAppend_SourceSeqPolicy`, `TestModel_LongRuns` (capacities 1..8, thousands of wraps), `TestGet_StatusMatrix`/`TestContinue_CursorValidation` (generations). |
 | Subscribers process every record within retention and report deterministic lag or reset. | `TestSubscription_Stress`, `TestSubscription_ReplayAcrossBatches`, `TestSubscription_Lag`, `TestSubscription_ResetAndSeek`, subscription model in `FuzzSeries`. |
-| Failed appends, incl. recovered callback panics, leave no state change. | `TestAppend_ClonePanicNoStateChange`, `TestIndex_ExtractorPanicNoStateChange`, `TestAppendBatch_PanicNoStateChange`, `TestAppend_InvalidInput`, `TestAppendBatch_IntraBatchConflicts/Reject`; model compares Stats after every failed append. Only diagnostic counters move (P-04). |
+| Failed appends, incl. recovered callback panics, leave no state change. | Errors: `TestAppend_InvalidInput`, `TestAppendBatch_IntraBatchConflicts/Reject`; only diagnostic counters move (P-04). Panics now propagate (S12-01) and leave nothing changed, counters included: `TestAppend_ClonePanicNoStateChange`, `TestIndex_ExtractorPanicNoStateChange`, `TestAppendBatch_PanicNoStateChange`, `TestAppendBatch_PanicEndsPendingOverlay`; the model and `FuzzSeries` recover panics from a panicking extractor and compare state after every op. |
 | Steady-state hot paths meet the §22.2 allocation targets. | `TestAllocAcceptance` (exact counting, every §22.2 item = 0); B-tree write path ~0.06 allocs/record measured and reported (S7-05, BENCHMARKS.md). |
 | No serialization, reflection, `[]byte` keys, or T/K to `interface{}` on normal paths. | `TestStructure_Imports` bans `reflect`/`unsafe`; keys stay typed in per-index scratch (S6-01); `fmt.Sprint(k)` only on the conflict error path (P-18); `CallbackPanicError.Value any` only on the panic path. |
 | Synchronization model documented in package comments and enforced structurally. | `doc.go` "Synchronization model"; `TestStructure_NoLockFields`, `TestStructure_BTreeNoLocks`; lock-discipline audit in DECISIONS.md. |
@@ -319,3 +318,18 @@ Event-time ordering capability:
 | Disabling the event-time index does not change Seq, Gen or retention semantics (T-022). | `TestModeEquivalence` (identical results and Stats except time-only fields), `TestIndex_ModeIndependence`. |
 | Public API requires no B-tree types; continuation uses the opaque TimeCursor (TI-013). | `TimeCursor` fields are unexported; the btree import is confined to one file (T-025a). |
 | Benchmarks measure event-time indexing cost separately (22.3). | `BenchmarkCompare_*` (None vs BTree), BENCHMARKS.md. |
+
+## Post-plan change — panics pass through; derivation moved out (S12-01, S12-02)
+
+Decided by the user on 2026-10-11 after reviewing sessions 1-11.
+
+Done:
+- Panic pass-through (S12-01): removed `CallbackPanicError`/`ErrCallbackPanic` and the recover wrappers around Clone and extractors; `Append`/`AppendBatch` now hold the lock with `defer` (`appendTx`, `appendBatchTx`) and clean the clone scratch by `defer`.
+- Derivation removed (S12-02): deleted `derive.go`/`derive_test.go`; added `Subscription.NextState` and `SourceState`; `ExampleSubscription_NextState` is the documented derive loop; reverted the unset `StartFrom` kind.
+- `doc.go` updated (writes and panics, derived series as a caller loop, synchronization).
+
+Tests:
+- Panic safety: `TestAppend_ClonePanicNoStateChange`, `TestIndex_ExtractorPanicNoStateChange`, `TestAppendBatch_PanicNoStateChange` (panic value propagates; Stats exactly unchanged; invariants hold; next append succeeds; scratch cleared), new `TestAppendBatch_PanicEndsPendingOverlay`.
+- Model/fuzz: the panicking extractor stays in random runs; panics are recovered by the run loop (`catchPanic`) and compared with the model's `modelPanic`.
+- `TestSubscription_NextState`, `ExampleSubscription_NextState`.
+- Mutation checks: dropping the deferred clone-scratch clear, the deferred `endBatch`, or the deferred unlock in Append each fail tests (the last one deadlocks, as a recovered panic would in production).

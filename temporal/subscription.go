@@ -10,8 +10,7 @@ import (
 type startKind uint8
 
 const (
-	startUnset startKind = iota // zero value: the caller's default
-	startNext
+	startNext startKind = iota // zero value
 	startOldest
 	startAt
 )
@@ -41,14 +40,6 @@ type SubscribeOptions struct {
 	OnLag LagPolicy
 }
 
-// orDefault replaces an unset start position with def.
-func (f StartFrom) orDefault(def StartFrom) StartFrom {
-	if f.kind == startUnset {
-		return def
-	}
-	return f
-}
-
 // subscriber is the notification endpoint shared with the Series.
 type subscriber struct {
 	wake      chan struct{} // buffer 1: coalesced wake-ups
@@ -67,13 +58,13 @@ type Subscription[T any] struct {
 	skipped uint64
 }
 
-// sourceSnapshot is the Series state captured in the same lock acquisition as
-// a subscription read (P-12). Derivers use it to propagate watermarks.
-type sourceSnapshot struct {
-	gen         Gen
-	newest      Seq
-	watermark   Timestamp
-	maxObserved Timestamp // MinTimestamp if nothing was accepted in gen
+// SourceState is the state of the subscribed Series captured in the same lock
+// acquisition as a read (see NextState).
+type SourceState struct {
+	Gen                  Gen
+	Newest               Ref       // newest retained record; zero if the Series is empty
+	Watermark            Timestamp // the Series watermark at the read
+	MaxObservedEventTime Timestamp // MinTimestamp if nothing was accepted in Gen
 }
 
 // Subscribe registers a subscription. It succeeds on a closed Series, whose
@@ -90,7 +81,7 @@ func (s *Series[T]) Subscribe(opts SubscribeOptions) (*Subscription[T], error) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	sub.cur = s.startCursor(opts.Start.orDefault(StartNext()))
+	sub.cur = s.startCursor(opts.Start)
 	var list []*subscriber
 	if p := s.subs.Load(); p != nil {
 		list = slices.Clone(*p)
@@ -105,7 +96,7 @@ func (s *Series[T]) startCursor(from StartFrom) Cursor {
 	switch {
 	case from.kind == startAt && !from.ref.IsZero():
 		return Cursor{Gen: from.ref.Gen, Next: from.ref.Seq}
-	case from.kind == startNext || from.kind == startUnset || s.b.empty():
+	case from.kind == startNext || s.b.empty():
 		return Cursor{Gen: s.gen, Next: s.b.nextSeq()}
 	default: // StartOldest, or StartAt with the zero Ref
 		return Cursor{Gen: s.gen, Next: s.b.oldest}
@@ -163,13 +154,18 @@ func (sub *Subscription[T]) closed() bool {
 // returned; err is non-nil for ErrClosed, ErrReset, ErrInvalidInput and lag
 // under LagFail. Lag is evaluated in the same lock acquisition as the copy,
 // and the cursor moves only after a successful copy (S-005).
-func (sub *Subscription[T]) poll(dst []Entry[T], limit int) ([]Entry[T], sourceSnapshot, bool, error) {
+func (sub *Subscription[T]) poll(dst []Entry[T], limit int) ([]Entry[T], SourceState, bool, error) {
 	s := sub.s
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	snap := sourceSnapshot{gen: s.gen, newest: s.b.newest, watermark: s.watermark, maxObserved: MinTimestamp}
+	snap := SourceState{
+		Gen:                  s.gen,
+		Newest:               s.b.newestRef(s.gen),
+		Watermark:            s.watermark,
+		MaxObservedEventTime: MinTimestamp,
+	}
 	if s.hasObserved {
-		snap.maxObserved = s.maxObserved
+		snap.MaxObservedEventTime = s.maxObserved
 	}
 	switch {
 	case sub.closed():
@@ -218,26 +214,34 @@ func (sub *Subscription[T]) poll(dst []Entry[T], limit int) ([]Entry[T], sourceS
 // drained, ErrReset after Clear until Seek, and a *LagError (ErrLagged) if the
 // cursor fell behind retention under LagFail.
 func (sub *Subscription[T]) Next(ctx context.Context, dst []Entry[T], limit int) ([]Entry[T], error) {
-	out, _, err := sub.next(ctx, dst, limit)
+	out, _, err := sub.NextState(ctx, dst, limit)
 	return out, err
 }
 
-// next is Next that also returns the source snapshot of the successful read.
-func (sub *Subscription[T]) next(ctx context.Context, dst []Entry[T], limit int) ([]Entry[T], sourceSnapshot, error) {
+// NextState is Next that also returns the state of the source Series captured
+// under the same lock as the records (zero on error). It is the building block
+// for derived series: after processing a batch whose last record is
+// state.Newest, every record up to state.Watermark has been seen, so the
+// watermark may be forwarded to a destination series. See
+// ExampleSubscription_NextState for a complete derive loop.
+func (sub *Subscription[T]) NextState(ctx context.Context, dst []Entry[T], limit int) ([]Entry[T], SourceState, error) {
 	for {
 		if err := ctx.Err(); err != nil {
-			return dst, sourceSnapshot{}, err
+			return dst, SourceState{}, err
 		}
-		out, snap, got, err := sub.poll(dst, limit)
-		if got || err != nil {
-			return out, snap, err
+		out, state, got, err := sub.poll(dst, limit)
+		switch {
+		case err != nil:
+			return out, SourceState{}, err
+		case got:
+			return out, state, nil
 		}
 		select {
 		case <-sub.sub.wake:
 		case <-ctx.Done():
-			return dst, sourceSnapshot{}, ctx.Err()
+			return dst, SourceState{}, ctx.Err()
 		case <-sub.sub.done:
-			return dst, sourceSnapshot{}, ErrClosed
+			return dst, SourceState{}, ErrClosed
 		}
 	}
 }

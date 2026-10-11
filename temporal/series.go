@@ -3,7 +3,6 @@ package temporal
 import (
 	"fmt"
 	"math"
-	"runtime/debug"
 	"sync"
 	"sync/atomic"
 )
@@ -114,7 +113,17 @@ func New[T any](cfg Config[T]) (*Series[T], error) {
 
 // Append validates and stores one record, evicting the oldest record if the
 // Series is full. A returned error guarantees that no data state changed.
+//
+// A panic in Config.Clone or a key extractor propagates to the caller. Those
+// callbacks run before any mutation and the lock is released on the way out,
+// so a caller that recovers finds the Series unchanged and usable.
 func (s *Series[T]) Append(v T, m InputMeta) (AppendResult, error) {
+	if s.cfg.cloneOnWrite || len(s.idx) > 0 {
+		return s.appendWithCallbacks(&v, &m)
+	}
+	// No user code runs on this path, so nothing can panic while the lock is
+	// held; the explicit unlock and the absence of an extra call layer keep
+	// the hot path as cheap as possible.
 	s.mu.Lock()
 	if s.closed {
 		s.mu.Unlock()
@@ -125,6 +134,26 @@ func (s *Series[T]) Append(v T, m InputMeta) (AppendResult, error) {
 	if err == nil && res.Outcome == OutcomeAppended {
 		s.notify()
 	}
+	return res, err
+}
+
+// appendWithCallbacks is Append for a Series whose transaction runs user code
+// (CloneOnWrite or key extractors): the lock is released by defer, so a
+// panicking callback cannot leave it held (S12-01).
+func (s *Series[T]) appendWithCallbacks(v *T, m *InputMeta) (res AppendResult, err error) {
+	appended := false
+	s.mu.Lock()
+	defer func() {
+		s.mu.Unlock()
+		if appended {
+			s.notify()
+		}
+	}()
+	if s.closed {
+		return AppendResult{}, ErrClosed
+	}
+	res, err = s.appendLocked(v, m)
+	appended = err == nil && res.Outcome == OutcomeAppended
 	return res, err
 }
 
@@ -144,11 +173,7 @@ func (s *Series[T]) appendLocked(v *T, m *InputMeta) (AppendResult, error) {
 		return AppendResult{}, err
 	}
 	if s.cfg.cloneOnWrite {
-		c, err := s.callClone(v)
-		if err != nil {
-			s.n.rejected++
-			return AppendResult{}, err
-		}
+		c := s.cfg.clone(*v)
 		v = &c
 	}
 	if len(s.idx) > 0 {
@@ -347,17 +372,6 @@ func (t *sourceSeqTracker) observe(epoch SourceEpoch, seq uint64) {
 		return
 	}
 	t.last = max(t.last, seq)
-}
-
-// callClone runs Config.Clone on the write path, converting a panic into a
-// *CallbackPanicError.
-func (s *Series[T]) callClone(v *T) (out T, err error) {
-	defer func() {
-		if r := recover(); r != nil {
-			err = &CallbackPanicError{Callback: "clone", Value: r, Stack: debug.Stack()}
-		}
-	}()
-	return s.cfg.clone(*v), nil
 }
 
 // Clear removes all records and starts a new generation: Gen increments, the

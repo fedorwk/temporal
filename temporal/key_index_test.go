@@ -232,7 +232,8 @@ func TestUniqueIndex_EvictionKeepsNewerMapping(t *testing.T) {
 	}
 }
 
-// T-014, E-007, W-004: an extractor panic is recovered with no state change.
+// S12-01 (replaces T-014), E-007, W-004: an extractor panic propagates with
+// no state change, a cleared scratch entry, and a usable Series.
 func TestIndex_ExtractorPanicNoStateChange(t *testing.T) {
 	boom := func(e *Entry[trade]) (int, bool) {
 		if e.Value.ID < 0 {
@@ -248,14 +249,11 @@ func TestIndex_ExtractorPanicNoStateChange(t *testing.T) {
 	appendTrade(t, s, 2, "BTC", 2)
 	before := s.Stats()
 
-	_, err := s.Append(trade{ID: -1, Symbol: "BTC"}, at(3)) // would evict ID 1
-	var pe *CallbackPanicError
-	if !errors.Is(err, ErrCallbackPanic) || !errors.As(err, &pe) || pe.Callback != "extractor:risky" || pe.Value != "bad id" {
-		t.Fatalf("error = %#v", err)
+	// The append would evict ID 1.
+	if v := panicValue(func() { s.Append(trade{ID: -1, Symbol: "BTC"}, at(3)) }); v != "bad id" {
+		t.Fatalf("panic value = %v, want the extractor panic", v)
 	}
-	after := s.Stats()
-	before.Rejected++
-	if !statsEqual(before, after) {
+	if after := s.Stats(); !statsEqual(before, after) {
 		t.Fatalf("state changed: %+v vs %+v", after, before)
 	}
 	if e, st := ids.Get(1); st != StatusOK || e.Value.ID != 1 {

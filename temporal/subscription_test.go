@@ -602,3 +602,37 @@ func TestAllocs_Subscriptions(t *testing.T) {
 		t.Errorf("Next with data available: %.4f allocs/op", n)
 	}
 }
+
+// S12-02: NextState returns the source state captured with the read, and the
+// zero state on errors.
+func TestSubscription_NextState(t *testing.T) {
+	s := mustNew(t, Config[int]{Capacity: 4})
+	sub := mustSubscribe(t, s, SubscribeOptions{Start: StartOldest()})
+	ctx := context.Background()
+	mustAppend(t, s, 1, at(30))
+	mustAppend(t, s, 2, at(10)) // late: MaxObservedEventTime stays 30
+	s.SetWatermark(25)
+
+	got, state, err := sub.NextState(ctx, nil, 1)
+	want := SourceState{Gen: 1, Newest: Ref{1, 2}, Watermark: 25, MaxObservedEventTime: 30}
+	if err != nil || len(got) != 1 || state != want {
+		t.Fatalf("NextState = %v %+v %v, want state %+v", values(got), state, err, want)
+	}
+	if got[0].Meta.Ref.Seq == state.Newest.Seq {
+		t.Fatal("first batch should not be caught up")
+	}
+	got, state, _ = sub.NextState(ctx, nil, 0)
+	if got[len(got)-1].Meta.Ref != state.Newest {
+		t.Fatal("second batch should reach Newest")
+	}
+
+	s.Clear()
+	if _, state, err := sub.NextState(ctx, nil, 0); !errors.Is(err, ErrReset) || state != (SourceState{}) {
+		t.Fatalf("after Clear: %+v %v, want zero state and ErrReset", state, err)
+	}
+	sub.Seek(StartOldest())
+	mustAppend(t, s, 3, at(1))
+	if _, state, _ := sub.NextState(ctx, nil, 0); state != (SourceState{Gen: 2, Newest: Ref{2, 1}, Watermark: MinTimestamp, MaxObservedEventTime: 1}) {
+		t.Fatalf("after Clear and Seek: %+v", state)
+	}
+}

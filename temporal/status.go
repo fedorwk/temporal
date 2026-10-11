@@ -86,7 +86,6 @@ var (
 	ErrSourceSeqNotIncreasing = errors.New("temporal: source sequence not increasing")
 	ErrUniqueConflict         = errors.New("temporal: unique key conflict")
 	ErrBatchTooLarge          = errors.New("temporal: batch larger than capacity")
-	ErrCallbackPanic          = errors.New("temporal: callback panicked")
 	ErrSeqExhausted           = errors.New("temporal: sequence exhausted")
 	ErrGenExhausted           = errors.New("temporal: generation exhausted")
 	ErrIndexBound             = errors.New("temporal: index already bound to a series")
@@ -126,20 +125,6 @@ func (e *ConflictError) Error() string {
 
 // Is reports whether target is ErrUniqueConflict.
 func (e *ConflictError) Is(target error) bool { return target == ErrUniqueConflict }
-
-// CallbackPanicError reports a recovered panic from a user callback.
-type CallbackPanicError struct {
-	Callback string // "extractor:<index>" or "clone"
-	Value    any
-	Stack    []byte
-}
-
-func (e *CallbackPanicError) Error() string {
-	return fmt.Sprintf("temporal: panic in %s callback: %v", e.Callback, e.Value)
-}
-
-// Is reports whether target is ErrCallbackPanic.
-func (e *CallbackPanicError) Is(target error) bool { return target == ErrCallbackPanic }
 
 // ReadInfo describes the result of a batch read.
 type ReadInfo struct {

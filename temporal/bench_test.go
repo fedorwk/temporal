@@ -102,26 +102,24 @@ func BenchmarkCompare_AppendBatch(b *testing.B) {
 			b.Run(fmt.Sprintf("mode=%s/batch=%d", modeName(mode), size), func(b *testing.B) {
 				s := mustNew(b, Config[tick]{Capacity: 1 << 16, TimeIndex: mode})
 				times := eventTimes(1<<16, 0.01, 0.01, 2)
-				items := make([]Input[tick], size)
-				dst := make([]AppendResult, 0, size)
-				k := 0
-				fill := func() {
-					for j := range items {
-						items[j] = Input[tick]{Value: tick{ID: uint64(k)}, Meta: at(times[k&(1<<16-1)])}
-						k++
+				// Pre-built batches covering the time stream, so the timed loop
+				// does no setup and never pauses the timer.
+				batches := make([][]Input[tick], (1<<16)/size)
+				for j := range batches {
+					batches[j] = make([]Input[tick], size)
+					for k := range batches[j] {
+						n := j*size + k
+						batches[j][k] = Input[tick]{Value: tick{ID: uint64(n)}, Meta: at(times[n])}
 					}
 				}
-				for range (1 << 16) / size {
-					fill()
+				dst := make([]AppendResult, 0, size)
+				for _, items := range batches {
 					dst, _ = s.AppendBatch(dst[:0], items)
 				}
 				b.ReportAllocs()
 				b.ResetTimer()
 				for i := 0; i < b.N; i++ {
-					b.StopTimer()
-					fill()
-					b.StartTimer()
-					dst, _ = s.AppendBatch(dst[:0], items)
+					dst, _ = s.AppendBatch(dst[:0], batches[i%len(batches)])
 				}
 				reportRecords(b, b.N*size)
 			})

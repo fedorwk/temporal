@@ -4,8 +4,8 @@
 // A Series retains the newest Capacity records of one stream. Records are
 // stored in arrival order and can be read by arrival position (Seq), by event
 // time when an event-time index is configured, and by key through optional
-// key indexes. Subscriptions replay records in arrival order, and derived
-// series are maintained by worker goroutines.
+// key indexes. Subscriptions replay records in arrival order; derived series
+// are built on them by the caller (see Subscription.NextState).
 //
 // # Identity: Seq, Gen and Ref
 //
@@ -72,7 +72,7 @@
 //
 // # Watermarks
 //
-// The single owner of a series (an adapter, or a Deriver) declares
+// The single owner of a series (an adapter, or a derive loop) declares
 // completeness with SetWatermark, which is monotonic. With
 // Config.GateReadsByWatermark, backward reads whose bound exceeds the watermark
 // return StatusNotReady, and forward reads (After, AtOrAfter, NextN) return
@@ -94,10 +94,15 @@
 // # Writes
 //
 // Append and AppendBatch validate and prepare everything before mutating
-// anything, so every returned error, including a recovered panic in Clone or an
-// extractor (*CallbackPanicError), leaves no data state change. AppendBatch is
+// anything, so every returned error leaves no data state change. AppendBatch is
 // atomic and behaves exactly like the same Appends in order, with one
 // notification. A batch larger than Capacity fails with ErrBatchTooLarge.
+//
+// The library does not recover panics. A panic in Clone or a key extractor
+// propagates out of Append or AppendBatch; because callbacks run before any
+// mutation and the lock and scratch buffers are released on the way out, a
+// caller that recovers finds the Series unchanged and usable. A panic in Clone
+// during a read propagates the same way after the lock is released.
 //
 // # Ownership and Clone
 //
@@ -116,10 +121,12 @@
 // after Clear it gets ErrReset until Seek. Wake-ups are coalesced and never
 // block producers.
 //
-// StartDerived runs a worker that reads a source subscription, calls a derive
-// function outside all locks, and appends each batch's outputs to a destination
-// with one AppendBatch. Its processed cursor advances only after that append
-// succeeds; on any error the worker stops and records it.
+// A derived series (bars, indicators, filtered streams) is a loop the caller
+// owns: read the source with Subscription.NextState, compute outputs outside
+// any lock, append them to the destination with one AppendBatch, advance a
+// checkpoint only after that append succeeds, and forward the source watermark
+// with SetWatermark once the batch reached SourceState.Newest. The library
+// starts no goroutines; ExampleSubscription_NextState shows the complete loop.
 //
 // # Synchronization model
 //
@@ -133,8 +140,7 @@
 //     could overwrite.
 //   - User code (Clone, key extractors) runs only in documented places and must
 //     not call any Series method: sync.Mutex is not reentrant, so a callback that
-//     re-enters the same Series deadlocks. Derive functions run outside all
-//     Series locks.
+//     re-enters the same Series deadlocks.
 //   - No iterator yields while the mutex is held. Paged scans copy one page under
 //     the lock, release it, and then yield.
 //   - Subscribers are woken only after the mutex is released.

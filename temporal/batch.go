@@ -15,31 +15,55 @@ import "fmt"
 // ErrBatchTooLarge. On any error dst is returned unchanged and no data state
 // changes; *ConflictError carries the failing item's BatchPos, and other
 // errors name the position while still matching their sentinel via errors.Is.
+//
+// A panic in Config.Clone or a key extractor propagates to the caller with no
+// state change, as for Append.
 func (s *Series[T]) AppendBatch(dst []AppendResult, items []Input[T]) ([]AppendResult, error) {
-	s.mu.Lock()
-	switch {
-	case s.closed:
+	var appended bool
+	var err error
+	if s.cfg.cloneOnWrite || len(s.idx) > 0 {
+		dst, appended, err = s.appendBatchWithCallbacks(dst, items)
+	} else {
+		// No user code runs, so nothing can panic under the lock and there is
+		// no clone scratch or index overlay to clean up.
+		s.mu.Lock()
+		dst, appended, err = s.appendBatchLocked(dst, items)
 		s.mu.Unlock()
-		return dst, ErrClosed
-	case len(items) == 0:
-		s.mu.Unlock()
-		return dst, nil // P-09
-	case len(items) > s.cfg.capacity:
-		s.n.rejected++
-		s.mu.Unlock()
-		return dst, ErrBatchTooLarge
 	}
-	if err := s.prepareBatch(items); err != nil {
-		s.n.rejected++
-		s.mu.Unlock()
-		return dst, err
-	}
-	dst, appended := s.commitBatch(dst, items)
-	s.mu.Unlock()
 	if appended {
 		s.notify()
 	}
-	return dst, nil
+	return dst, err
+}
+
+// appendBatchWithCallbacks runs the transaction when user code runs (Clone or
+// extractors): the deferred calls release the lock and the CloneOnWrite
+// scratch even during a panic (S12-01); prepareBatch ends index batches by
+// defer.
+func (s *Series[T]) appendBatchWithCallbacks(dst []AppendResult, items []Input[T]) ([]AppendResult, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	defer s.clearCloned()
+	return s.appendBatchLocked(dst, items)
+}
+
+// appendBatchLocked runs one AppendBatch transaction; s.mu is held.
+func (s *Series[T]) appendBatchLocked(dst []AppendResult, items []Input[T]) ([]AppendResult, bool, error) {
+	switch {
+	case s.closed:
+		return dst, false, ErrClosed
+	case len(items) == 0:
+		return dst, false, nil // P-09
+	case len(items) > s.cfg.capacity:
+		s.n.rejected++
+		return dst, false, ErrBatchTooLarge
+	}
+	if err := s.prepareBatch(items); err != nil {
+		s.n.rejected++
+		return dst, false, err
+	}
+	dst, appended := s.commitBatch(dst, items)
+	return dst, appended, nil
 }
 
 // prepareBatch runs the prepare phase for every item against a simulated
@@ -78,17 +102,11 @@ func (s *Series[T]) prepareBatch(items []Input[T]) error {
 		m := &items[i].Meta
 		p, err := s.prepareMeta(m, maxObserved, hasObserved, &trk, next)
 		if err != nil {
-			s.clearCloned()
 			return batchErr(i, err)
 		}
 		v := &items[i].Value
 		if s.cfg.cloneOnWrite {
-			c, err := s.callClone(v)
-			if err != nil {
-				s.clearCloned()
-				return batchErr(i, err)
-			}
-			s.cloned[i] = c
+			s.cloned[i] = s.cfg.clone(*v)
 			v = &s.cloned[i]
 		}
 		if len(s.idx) > 0 {
@@ -97,7 +115,6 @@ func (s *Series[T]) prepareBatch(items []Input[T]) error {
 				evictBelow++
 			}
 			if err := s.prepareIndexes(v, m, &p, next, evictBelow, i); err != nil {
-				s.clearCloned()
 				return batchErr(i, err)
 			}
 			if !p.drop {

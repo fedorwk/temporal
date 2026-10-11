@@ -106,3 +106,10 @@ func allocsPerOp(runs int, f func()) float64 {
 	}
 	return best
 }
+
+// panicValue runs f and returns the value it panicked with, or nil.
+func panicValue(f func()) (v any) {
+	defer func() { v = recover() }()
+	f()
+	return nil
+}

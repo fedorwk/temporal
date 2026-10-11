@@ -12,18 +12,19 @@ Medians of 10 runs. `-benchmem` truncates allocs/op to an integer, so "<1" marks
 
 | Operation | None ns/op | BTree ns/op | None records/s | BTree records/s | BTree allocs/op | p |
 |---|---:|---:|---:|---:|---:|---:|
-| Append | 25.6 | 95.9 | 39.1 M | 10.4 M | <1 (1 B/op amortized) | 0.000 |
-| AppendBatch(8) | 271 | 1,454 | 29.5 M | 5.5 M | <1 (471 B/op) | 0.000 |
-| AppendBatch(64) | 1,551 | 8,541 | 41.3 M | 7.5 M | 4 | 0.000 |
-| AppendBatch(256) | 6,035 | 28,028 | 42.4 M | 9.1 M | 17 | 0.000 |
-| AppendBatch(1024) | 21,175 | 103,298 | 48.4 M | 9.9 M | 68 | 0.000 |
-| ReadFrom (256 entries) | 1,112 | 1,116 | 230 M | 229 M | 0 | **0.062** |
-| Subscription.Next (256 entries) | 1,194 | 1,193 | 214 M | 215 M | 0 | **0.425** |
+| Append | 25.7 | 96.3 | 39.0 M | 10.4 M | <1 (1 B/op amortized) | 0.000 |
+| AppendBatch(8) | 153 | 870 | 52.2 M | 9.2 M | <1 (397 B/op) | 0.000 |
+| AppendBatch(64) | 1,187 | 6,521 | 53.9 M | 9.8 M | 4 | 0.000 |
+| AppendBatch(256) | 4,709 | 25,532 | 54.4 M | 10.0 M | 17 | 0.000 |
+| AppendBatch(1024) | 18,793 | 99,476 | 54.5 M | 10.3 M | 68 | 0.000 |
+| ReadFrom (256 entries) | 1,133 | 1,132 | 226 M | 226 M | 0 | **0.447** |
+| Subscription.Next (256 entries) | 1,195 | 1,196 | 214 M | 214 M | 0 | **0.818** |
 | AsOf | 6.4 (Disabled) | 152 | — | 6.6 M | 0 | — |
 | Range (256 entries) | 15.9 (Disabled) | 2,222 | — | 115 M | 0 | — |
 
-- **Q-017 holds:** ReadFrom and Subscription.Next show no statistically significant difference between modes (p = 0.06 and 0.43).
-- **Cost of event-time indexing on ingest:** about 70 ns per record (Append 25.6 → 95.9 ns). Batching does not amortize it: the B-tree costs ~100 ns per record at every batch size, while the None path gets cheaper per record with larger batches.
+- **Q-017 holds:** ReadFrom and Subscription.Next show no statistically significant difference between modes (p = 0.45 and 0.82).
+- **Cost of event-time indexing on ingest:** about 70 ns per record (Append 25.7 → 96.3 ns). Batching does not amortize it: the B-tree costs ~95-100 ns per record at every batch size, while the None path drops to ~18 ns per record (54 M records/s) in batches.
+- The AppendBatch rows were re-measured on 2026-10-11 after fixing the benchmark: the first version paused the timer every iteration, and with `ReportAllocs` each pause reads memory statistics, inflating small batches (8 records: 271 ns reported, 153 ns real). The rest of the table was re-run at the same time and matches the first run within noise.
 - **B-tree write-path allocations:** ~0.066 allocations per record (68 per 1,024-record batch; about 33-38 B/record) from node churn: nodes are freed at the old end of the tree and allocated at the new end even at constant size (DECISIONS S7-05). The None path allocates nothing.
 - For None, AsOf and Range measure the cost of returning `StatusTimeIndexDisabled`.
 

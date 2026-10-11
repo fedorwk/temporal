@@ -2,7 +2,6 @@ package temporal
 
 import (
 	"fmt"
-	"runtime/debug"
 	"sync"
 )
 
@@ -27,8 +26,8 @@ type Index[T any] interface {
 
 	// prepare extracts the key of the item at batch position pos and decides
 	// its outcome without mutating committed state. Rows with Seq < evictBelow
-	// count as evicted. It returns *ConflictError under ConflictReject and
-	// *CallbackPanicError if the extractor panics.
+	// count as evicted. It returns *ConflictError under ConflictReject; a
+	// panic in the extractor propagates to the caller.
 	prepare(e *Entry[T], evictBelow Seq, pos int) (decision, error)
 	// beginBatch, stage and endBatch maintain the overlay of keys claimed by
 	// earlier items of an AppendBatch (P-02).
@@ -103,20 +102,14 @@ func (c *keyCore[T, K]) bindCore(s *Series[T], capacity int) {
 	c.pdec = make([]decision, 1)
 }
 
-// extract runs the extractor for position pos, growing the scratch as needed
-// and converting a panic into a *CallbackPanicError.
-func (c *keyCore[T, K]) extract(e *Entry[T], pos int) (k K, ok bool, err error) {
+// extract runs the extractor for position pos, growing the scratch as needed.
+// A panic propagates; prepare has mutated nothing at that point.
+func (c *keyCore[T, K]) extract(e *Entry[T], pos int) (K, bool) {
 	if pos >= len(c.pkeys) {
 		c.pkeys = append(c.pkeys, make([]K, pos+1-len(c.pkeys))...)
 		c.pdec = append(c.pdec, make([]decision, pos+1-len(c.pdec))...)
 	}
-	defer func() {
-		if r := recover(); r != nil {
-			err = &CallbackPanicError{Callback: "extractor:" + c.name, Value: r, Stack: debug.Stack()}
-		}
-	}()
-	k, ok = c.fn(e)
-	return k, ok, nil
+	return c.fn(e)
 }
 
 // lockedSeries locks the bound Series for a lookup, or returns nil for an
@@ -173,10 +166,7 @@ func (ix *UniqueIndex[T, K]) holder(k K, evictBelow Seq) (Seq, bool) {
 }
 
 func (ix *UniqueIndex[T, K]) prepare(e *Entry[T], evictBelow Seq, pos int) (decision, error) {
-	k, ok, err := ix.extract(e, pos)
-	if err != nil {
-		return decision{}, err
-	}
+	k, ok := ix.extract(e, pos)
 	d := decision{kind: decNotIndexed}
 	if ok {
 		d.kind = decInsert
@@ -418,10 +408,7 @@ func (ix *MultiIndex[T, K]) bind(s *Series[T], capacity int) {
 }
 
 func (ix *MultiIndex[T, K]) prepare(e *Entry[T], _ Seq, pos int) (decision, error) {
-	k, ok, err := ix.extract(e, pos)
-	if err != nil {
-		return decision{}, err
-	}
+	k, ok := ix.extract(e, pos)
 	d := decision{kind: decNotIndexed}
 	if ok {
 		d.kind = decInsert

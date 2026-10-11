@@ -117,7 +117,9 @@ func (m *model) append(v int, in InputMeta) (AppendResult, error) {
 	evicting := len(m.recs) == m.capacity
 	ds, err := m.decideIndexes(&entry, evicting)
 	if err != nil {
-		m.rejected++
+		if _, panicked := err.(modelPanic); !panicked { // a panic returns no error, so no counter moves
+			m.rejected++
+		}
 		return AppendResult{}, err
 	}
 	res := AppendResult{Ref: entry.Meta.Ref, Flags: flags}
@@ -227,6 +229,9 @@ func (m *model) appendBatch(items []Input[int]) ([]AppendResult, error) {
 	var out []AppendResult
 	for i, it := range items {
 		res, err := c.append(it.Value, it.Meta)
+		if _, panicked := err.(modelPanic); panicked {
+			return nil, err // propagates with no state or counter change
+		}
 		if err != nil {
 			m.rejected++
 			var ce *ConflictError
@@ -1022,7 +1027,8 @@ func runSeqModel(
 		switch op := r.IntN(100); {
 		case op < 34:
 			v, in := g.nextValue(), g.meta()
-			got, gotErr := s.Append(v, in)
+			var got AppendResult
+			gotErr := catchPanic(func() (err error) { got, err = s.Append(v, in); return err })
 			want, wantErr := m.append(v, in)
 			if !errMatches(gotErr, wantErr) || got != want {
 				fail(step, "Append", "got (%+v, %v), want (%+v, %v) for %+v", got, gotErr, want, wantErr, in)
@@ -1034,7 +1040,7 @@ func runSeqModel(
 				batchSeen["replaced/keptFirst"]++
 			case errors.Is(gotErr, ErrUniqueConflict):
 				batchSeen["conflict"]++
-			case errors.Is(gotErr, ErrCallbackPanic):
+			case errors.As(gotErr, new(modelPanic)):
 				batchSeen["extractor panic"]++
 			}
 		case op < 40:
@@ -1043,7 +1049,11 @@ func runSeqModel(
 				items[i] = Input[int]{Value: g.nextValue(), Meta: g.meta()}
 			}
 			dst := []AppendResult{{Index: "prefix"}}
-			got, gotErr := s.AppendBatch(dst, items)
+			var got []AppendResult
+			gotErr := catchPanic(func() (err error) { got, err = s.AppendBatch(dst, items); return err })
+			if gotErr != nil {
+				got = dst // a panic returns nothing; errors return dst unchanged
+			}
 			want, wantErr := m.appendBatch(items)
 			if !errMatches(gotErr, wantErr) || got[0].Index != "prefix" || !slices.Equal(got[1:], want) {
 				fail(step, "AppendBatch", "%d items: got (%+v, %v), want (%+v, %v)", len(items), got, gotErr, want, wantErr)

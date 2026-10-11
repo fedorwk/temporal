@@ -217,7 +217,9 @@ func TestAppendBatch_KeysOfRowsEvictedInBatch(t *testing.T) {
 	}
 }
 
-// T-014 (batch), E-007: a panic at item k leaves no state change.
+// S12-01 (replaces T-014 batch), E-007: a panic at item k propagates with no
+// state change; the lock, the CloneOnWrite scratch and the pending-key overlay
+// are all released.
 func TestAppendBatch_PanicNoStateChange(t *testing.T) {
 	boom := func(e *Entry[trade]) (int, bool) {
 		if e.Value.ID < 0 {
@@ -245,14 +247,10 @@ func TestAppendBatch_PanicNoStateChange(t *testing.T) {
 		} else {
 			items[2].Value.Symbol = "boom"
 		}
-		_, err := s.AppendBatch(nil, items)
-		var pe *CallbackPanicError
-		if !errors.As(err, &pe) || !errors.Is(err, ErrCallbackPanic) || !strings.Contains(err.Error(), "batch item 2") {
-			t.Fatalf("%s: error = %v", kind, err)
+		if v := panicValue(func() { s.AppendBatch(nil, items) }); v != kind {
+			t.Fatalf("%s: panic value = %v", kind, v)
 		}
-		after := s.Stats()
-		before.Rejected++
-		if !statsEqual(before, after) {
+		if after := s.Stats(); !statsEqual(before, after) {
 			t.Fatalf("%s: state changed: %+v vs %+v", kind, after, before)
 		}
 		for i := range s.cloned {
@@ -261,7 +259,34 @@ func TestAppendBatch_PanicNoStateChange(t *testing.T) {
 			}
 		}
 		mustInvariants(t, s)
+		if _, err := s.AppendBatch(nil, tradeInputs([3]int{2, 0, 5})); err != nil { // the lock was released
+			t.Fatalf("%s: next batch: %v", kind, err)
+		}
 	}
+}
+
+// S12-01: a batch that panics after an earlier item claimed key K must not
+// leave K in the pending overlay; a later single Append of K succeeds even
+// under ConflictReject.
+func TestAppendBatch_PanicEndsPendingOverlay(t *testing.T) {
+	ix := NewUniqueIndex("id", func(e *Entry[trade]) (int, bool) {
+		if e.Value.ID < 0 {
+			panic("boom")
+		}
+		return e.Value.ID, true
+	}, ConflictReject)
+	s := mustNew(t, Config[trade]{Capacity: 8, Indexes: []Index[trade]{ix}})
+	items := tradeInputs([3]int{5, 0, 1}, [3]int{-1, 0, 2})
+	if v := panicValue(func() { s.AppendBatch(nil, items) }); v != "boom" {
+		t.Fatalf("panic value = %v", v)
+	}
+	if ix.batch || len(ix.pending) != 0 {
+		t.Fatal("pending overlay still active after the panic")
+	}
+	if _, err := s.Append(trade{ID: 5}, at(3)); err != nil {
+		t.Fatalf("key 5 should be free: %v", err)
+	}
+	mustInvariants(t, s)
 }
 
 // W-003, P-09, W-008: size limits, empty batches and closed series.

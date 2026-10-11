@@ -514,8 +514,9 @@ func TestAppend_Concurrent(t *testing.T) {
 	mustInvariants(t, s)
 }
 
-// T-014 (part), E-007, W-004: a Clone panic on Append is recovered, reported
-// as *CallbackPanicError, and leaves no data state change.
+// S12-01 (replaces T-014 part), E-007, W-004: a Clone panic on Append
+// propagates to the caller, leaves no state change at all (counters
+// included), and leaves the Series usable.
 func TestAppend_ClonePanicNoStateChange(t *testing.T) {
 	clone := func(v []int) []int {
 		if len(v) > 0 && v[0] < 0 {
@@ -528,19 +529,14 @@ func TestAppend_ClonePanicNoStateChange(t *testing.T) {
 	mustAppend(t, s, []int{2}, at(2))
 	before := s.Stats()
 
-	_, err := s.Append([]int{-1}, at(3))
-	var pe *CallbackPanicError
-	if !errors.Is(err, ErrCallbackPanic) || !errors.As(err, &pe) || pe.Callback != "clone" ||
-		pe.Value != "negative" || len(pe.Stack) == 0 {
-		t.Fatalf("error = %#v", err)
+	if v := panicValue(func() { s.Append([]int{-1}, at(3)) }); v != "negative" {
+		t.Fatalf("panic value = %v, want the Clone panic", v)
 	}
-	after := s.Stats()
-	before.Rejected++
-	if !statsEqual(before, after) {
-		t.Fatalf("state changed: %+v vs %+v", after, before)
+	if after := s.Stats(); !statsEqual(before, after) {
+		t.Fatalf("state changed: %+v vs %+v", s.Stats(), before)
 	}
 	mustInvariants(t, s)
-	if res := mustAppend(t, s, []int{3}, at(3)); res.Ref.Seq != 3 {
+	if res := mustAppend(t, s, []int{3}, at(3)); res.Ref.Seq != 3 { // the lock was released
 		t.Fatalf("next Seq = %d, want 3", res.Ref.Seq)
 	}
 }

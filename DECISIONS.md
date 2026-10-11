@@ -88,14 +88,17 @@ Decisions not settled by `temporal_series_requirements.md`, or deviations from i
 | S10-01 | 10 | `MultiIndex.Get` with an unknown `Order` returns StatusInvalid (it was silently treated as Ascending). | A malformed request, like an unbound handle (S6-04). | Q-010, §7.1 |
 | S10-02 | 10 | Random model runs scale the probability of `Close` to the run length (~0.3 closes per run), and the fuzz target derives its decisions from the input bytes through `byteSource` (falling back to a PCG seeded from the bytes when they run out). | Long runs otherwise spent most steps on a closed Series; a constant-zero source would hang `rand.IntN`. | T-002, T-003 |
 
+| S12-01 | post-plan | **Panics are the caller's responsibility (deviates from W-004/E-007/T-014 and §27).** The library no longer recovers panics: `CallbackPanicError` and `ErrCallbackPanic` are removed, and a panic in Clone or a key extractor propagates out of Append/AppendBatch. The library stays panic-safe: callbacks run only in the prepare phase, before any mutation; Append/AppendBatch release the lock with `defer`, and the CloneOnWrite scratch, the extractor scratch entry and the unique-index pending overlay are cleaned up by `defer`. A caller that recovers finds the Series unchanged (counters included: `Stats.Rejected` does not move on a panic) and usable. Cost: the deferred unlock is used only when user code can run (CloneOnWrite or key indexes; fixed at New); the no-callback path keeps an explicit unlock and is exactly as fast as before (Append 25.7 ns None / 95.6 ns BTree). The callback path costs ~+4 ns per Append (unique index: 97.8 → 102 ns), the irreducible price of a defer; AppendBatch is unchanged within noise. | Idiomatic Go (sort, sync, errgroup pass callback panics through); a panicking callback is a bug and should not look like an ordinary rejection; simpler API and slightly cheaper indexed appends. Decided by the user on 2026-10-11. | §9.3, §27, W-004, E-007, T-014 |
+| S12-02 | post-plan | **Derivation moved out of the library (deviates from §18, D-001..D-008).** `StartDerived`, `Deriver`, `DeriveOptions`, `WatermarkMode` and the deriver states are removed; the library starts no goroutines. In their place, `Subscription.NextState` returns the records plus a public `SourceState{Gen, Newest, Watermark, MaxObservedEventTime}` captured under the same lock (the P-12 snapshot, now public, zero on error), and `ExampleSubscription_NextState` documents a complete derive loop (atomic append per batch, checkpoint after success, watermark forwarded when caught up). The S9 "unset" StartFrom kind is reverted: the zero value is StartNext. Supersedes S9-01..S9-06. | Leaves concurrency, retries, multi-input joins and panic policy to the caller (Go practice; the spec already puts multi-series coordination in a higher layer). Keeps the one primitive that cannot be built correctly from outside. Decided by the user on 2026-10-11. | §18, §19, P-12 |
+
 ## Lock-discipline audit (Session 10)
 
-Every acquisition of a Series mutex (`s.mu`), as of commit "session 10". "deferred" means `Lock()` is immediately followed by `defer Unlock()` (C-007).
+Every acquisition of a Series mutex (`s.mu`), as of commit "session 10", updated for S12-01/S12-02. "deferred" means `Lock()` is immediately followed by `defer Unlock()` (C-007).
 
 | Site | Kind | Unlock | User code under the lock | Panic safety |
 |---|---|---|---|---|
-| `Append` (series.go) | write | explicit, before `notify` | Clone (CloneOnWrite) via `callClone`; extractors via `keyCore.extract` — prepare phase only | both recover into `*CallbackPanicError`; the commit phase calls no user code (§9.3) |
-| `AppendBatch` (batch.go) | write | explicit, before `notify` | same as Append, per item, prepare phase only | same; `prepareBatch` clears the clone scratch and ends index batches on every exit |
+| `Append` (series.go, `appendTx`) | write | deferred; `notify` runs after `appendTx` returns | Clone (CloneOnWrite); extractors via `keyCore.extract` — prepare phase only | panics propagate after the deferred unlock; nothing was mutated yet; `prepareIndexes` zeroes the scratch entry by `defer`; the commit phase calls no user code (§9.3) |
+| `AppendBatch` (batch.go, `appendBatchTx`) | write | deferred; `notify` runs after `appendBatchTx` returns | same as Append, per item, prepare phase only | same; the clone scratch is cleared and index batches are ended by `defer`, also during a panic |
 | `Clear`, `Close` (series.go) | write | explicit, before `notify` | none | no user code |
 | `SetWatermark`, `Watermark` (watermark.go) | write/read | deferred | none | — |
 | `Len`, `Gen`, `OldestRef`, `NewestRef`, `Stats`, `CheckInvariants` | read | deferred | none | — |
@@ -108,9 +111,8 @@ Every acquisition of a Series mutex (`s.mu`), as of commit "session 10". "deferr
 
 Other synchronization:
 - `bindMu` (package-level) serializes index binding in `New`; it is held only inside `New`, while the new Series is not yet visible to any other goroutine, so no lock-order cycle with a Series mutex is possible.
-- `Deriver.mu` guards only `DeriverStatus`; it is never held while calling the derive function or any Series method.
 - `Series.subs` is an `atomic.Pointer` replaced copy-on-write under `s.mu`; `notify` reads it without the lock and only after the mutex is released (C-005). Notify call sites: Append, AppendBatch, Clear, Close.
-- The derive function runs on the worker goroutine between `Subscription.next` and `dst.AppendBatch`, outside every Series lock (D-002).
+- The library starts no goroutines (S12-02); derive loops run on the caller's goroutines, outside every Series lock.
 - Index implementations (time and key) hold no locks and call no user code or Series methods (T-025 enforces the lock part structurally).
 | S11-01 | 11 | `scripts/bench.sh` uses `benchstat` when installed and otherwise `scripts/benchcmp.py` (medians + Mann-Whitney U, no dependencies) for the Q-017 significance check. | benchstat was not installed and was not downloaded without asking. | §22.3, Q-017 |
 | S11-02 | 11 | The default benchmark set is the §22.3 comparison plus a practical §22.1 subset; `TEMPORAL_BENCH_FULL=1` enables the full matrix (capacities to 10M, all value sizes, all disorder/tie levels). | Keeps a default run under ~15 minutes. | §22.1 |

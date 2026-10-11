@@ -40,7 +40,7 @@ func TestSentinels_Distinct(t *testing.T) {
 		ErrNotFound, ErrExpired, ErrReset, ErrNotReady, ErrTimeIndexDisabled,
 		ErrLagged, ErrClosed, ErrInvalidConfig, ErrInvalidInput, ErrLate,
 		ErrSourceSeqNotIncreasing, ErrUniqueConflict, ErrBatchTooLarge,
-		ErrCallbackPanic, ErrSeqExhausted, ErrGenExhausted, ErrIndexBound,
+		ErrSeqExhausted, ErrGenExhausted, ErrIndexBound,
 	}
 	for i, a := range all {
 		if !strings.HasPrefix(a.Error(), "temporal: ") {
@@ -59,7 +59,6 @@ func TestSentinels_Distinct(t *testing.T) {
 func TestTypedErrors_IsAs(t *testing.T) {
 	lag := &LagError{Cursor: Cursor{Gen: 1, Next: 3}, Oldest: Ref{Gen: 1, Seq: 10}, Missed: 7}
 	conflict := &ConflictError{Index: "tradeID", Key: "42", Existing: Ref{Gen: 1, Seq: 5}, BatchPos: 2}
-	panicErr := &CallbackPanicError{Callback: "clone", Value: "boom", Stack: []byte("stack")}
 
 	cases := []struct {
 		err      error
@@ -73,10 +72,6 @@ func TestTypedErrors_IsAs(t *testing.T) {
 		{conflict, ErrUniqueConflict, func(e error) bool {
 			var ce *ConflictError
 			return errors.As(e, &ce) && ce.Index == "tradeID" && ce.Existing.Seq == 5 && ce.BatchPos == 2
-		}},
-		{panicErr, ErrCallbackPanic, func(e error) bool {
-			var pe *CallbackPanicError
-			return errors.As(e, &pe) && pe.Callback == "clone" && pe.Value == "boom"
 		}},
 	}
 	for _, tc := range cases {

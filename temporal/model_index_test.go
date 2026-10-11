@@ -26,11 +26,29 @@ type islot struct {
 	indexed bool
 }
 
-// call runs the extractor, reporting a panic like the Series does.
+// modelPanic stands for a panic that propagated out of an operation. The
+// model returns it as an error, and the run loop recovers real panics into it
+// (catchPanic), so both sides compare with errMatches.
+type modelPanic struct{ value any }
+
+func (p modelPanic) Error() string { return fmt.Sprintf("panic: %v", p.value) }
+
+// catchPanic converts a panic in f into a modelPanic error.
+func catchPanic(f func() error) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = modelPanic{r}
+		}
+	}()
+	return f()
+}
+
+// call runs the extractor; a panic becomes a modelPanic error, mirroring a
+// panic propagating out of the Series.
 func (ix *modelIndex) call(e *Entry[int]) (k int, ok bool, err error) {
 	defer func() {
 		if r := recover(); r != nil {
-			err = &CallbackPanicError{Callback: "extractor:" + ix.name, Value: r}
+			err = modelPanic{r}
 		}
 	}()
 	k, ok = ix.fn(e)
@@ -98,7 +116,7 @@ func (m *model) decideIndexes(e *Entry[int], evicting bool) ([]modelDecision, er
 // including the fields of typed errors.
 func errMatches(got, want error) bool {
 	var wc *ConflictError
-	var wp *CallbackPanicError
+	var wp modelPanic
 	switch {
 	case want == nil:
 		return got == nil
@@ -107,8 +125,8 @@ func errMatches(got, want error) bool {
 		return errors.As(got, &gc) && gc.Index == wc.Index && gc.Key == wc.Key &&
 			gc.Existing == wc.Existing && gc.BatchPos == wc.BatchPos
 	case errors.As(want, &wp):
-		var gp *CallbackPanicError
-		return errors.As(got, &gp) && gp.Callback == wp.Callback && gp.Value == wp.Value
+		var gp modelPanic
+		return errors.As(got, &gp) && gp.value == wp.value
 	default:
 		return errors.Is(got, want)
 	}
