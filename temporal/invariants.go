@@ -64,5 +64,52 @@ func (s *Series[T]) checkInvariantsLocked() error {
 			return fmt.Errorf("seq %d has reserved flag bits %#x", seq, m.flags)
 		}
 	}
+	return s.checkTimeIndexLocked()
+}
+
+// checkTimeIndexLocked verifies that the time index holds exactly one key per
+// retained record, with matching EventTime, in strictly increasing order.
+func (s *Series[T]) checkTimeIndexLocked() error {
+	if s.time == nil {
+		return nil
+	}
+	if got, want := s.time.Len(), s.b.len(); got != want {
+		return fmt.Errorf("time index len %d, series len %d", got, want)
+	}
+	const chunk = 64
+	keys := make([]timeKey, 0, chunk)
+	start := timeKey{eventTime: MinTimestamp, seq: 0}
+	var prev timeKey
+	seen := 0
+	for {
+		var more bool
+		keys, more = s.time.Ascend(keys[:0], start, MaxTimestamp, chunk)
+		for _, k := range keys {
+			if seen > 0 && !keyLess(prev, k) {
+				return fmt.Errorf("time index keys out of order: %v then %v", prev, k)
+			}
+			if !s.b.retained(k.seq) {
+				return fmt.Errorf("time index key %v is not retained (bounds %+v)", k, s.b)
+			}
+			if et := s.ring.eventTime(k.seq); et != k.eventTime {
+				return fmt.Errorf("time index key %v, ring EventTime %d", k, et)
+			}
+			prev = k
+			seen++
+		}
+		if !more {
+			break
+		}
+		start = timeKey{eventTime: prev.eventTime, seq: prev.seq + 1}
+	}
+	if seen != s.b.len() {
+		return fmt.Errorf("time index ascend saw %d keys, series len %d", seen, s.b.len())
+	}
+	if k, ok := s.time.Min(); ok != (seen > 0) || (ok && seen > 0 && k.eventTime > prev.eventTime) {
+		return fmt.Errorf("time index Min %v (ok %v) inconsistent with scan", k, ok)
+	}
+	if k, ok := s.time.Max(); ok && k != prev {
+		return fmt.Errorf("time index Max %v, last scanned %v", k, prev)
+	}
 	return nil
 }

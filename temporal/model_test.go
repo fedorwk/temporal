@@ -281,6 +281,13 @@ func (m *model) stats() Stats {
 	if m.observed {
 		st.MaxObservedEventTime = m.maxObserved
 	}
+	if m.mode != TimeIndexNone && len(m.recs) > 0 {
+		st.MinEventTime, st.MaxEventTime = MaxTimestamp, MinTimestamp
+		for _, e := range m.recs {
+			st.MinEventTime = min(st.MinEventTime, e.Meta.EventTime)
+			st.MaxEventTime = max(st.MaxEventTime, e.Meta.EventTime)
+		}
+	}
 	return st
 }
 

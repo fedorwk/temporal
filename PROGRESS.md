@@ -8,7 +8,8 @@ Plan: `IMPLEMENTATION_PLAN.md`. Spec: `temporal_series_requirements.md`. Decisio
 |---|---|
 | 1 Foundations and ring | done |
 | 2 Series core (Seq path) | done |
-| 3 Event-time ordering capability | next |
+| 3 Event-time ordering capability | done |
+| 4 Event-time point queries, status precedence, watermark gating | next |
 
 ## Session 1 — Foundations and ring
 
@@ -74,3 +75,24 @@ Known gaps:
 - `Config.Indexes` is validated for names only; binding and maintenance arrive in S6.
 - `TimeIndexBTree` is accepted but has no effect until S3.
 - `notify()` is a no-op until S8.
+
+## Session 3 — Event-time ordering capability
+
+Done:
+- `go.mod`: `github.com/tidwall/btree v1.8.2`.
+- `time_index.go`: `timeIndex` interface (full §13.2 method set), `newTimeIndex(mode)` (nil for None).
+- `time_index_btree.go`: `btreeTimeIndex` (NoLocks, two path hints, reusable iterator; debug assertions on Set/Delete preconditions).
+- `time_index_none.go`: zero-size `noTimeIndex`.
+- Series wiring: `time`, `keyScratch` (cap MaxReadBatch+1), `delKeys`/`insKeys` only when `time != nil`; one `Apply` per committed Append; `Clear` calls `time.Clear()`; `Stats.Min/MaxEventTime`; `CheckInvariants` verifies index length, order, retained Seqs and matching EventTimes via chunked ascend.
+
+Tests per requirement:
+- T-021, TI-011: `TestTimeIndex_Empty`, `TestTimeIndex_TiesAndPrimitives` (hand-computed expectations, limits 0/1/exact/over, dst append), `TestTimeIndex_SentinelAdjacent`, `TestTimeIndex_None`, `TestTimeIndex_Differential` (btree vs `sliceTimeIndex` reference after every op: FIFO eviction batches, single Delete+Set, Clear)
+- T-025, TI-001, C-002: `TestStructure_Imports` (btree only in its file; no reflect/unsafe; no sync.Map), `TestStructure_NoLockFields`, `TestStructure_BTreeNoLocks`
+- W-010, TI-007: `TestAppend_OneTimeIndexCallPerTransaction`
+- TI-008: `TestTimeIndexNone_NoScratch`; TI-002: `TestClear_KeepsTimeIndexMode`
+- W-009, TI-012: `TestAllocs_AppendByMode` (None 0; BTree measured 0 in steady state), `TestTimeIndex_BTreeAllocs` (all primitives 0)
+- T-002/T-010 in BTree mode: `TestModel_SeqPath/mode=1` now checks index invariants after every op (mutation-checked: dropping half of the deletes in Apply fails it).
+
+Open questions: none.
+
+Known gaps: none for S3 scope.

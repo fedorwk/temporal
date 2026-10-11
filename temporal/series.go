@@ -50,9 +50,15 @@ type Series[T any] struct {
 
 	cfg  config[T]
 	ring ring[T]
+	time timeIndex // nil when TimeIndexNone
 	b    bounds
 	gen  Gen
 	id   uint64
+
+	// Series-owned scratch, valid only under mu. Allocated only when time != nil.
+	keyScratch []timeKey // index query results, cap MaxReadBatch+1
+	delKeys    []timeKey // commit-phase evictions
+	insKeys    []timeKey // commit-phase insertions
 
 	env         envelope
 	hasObserved bool
@@ -75,6 +81,12 @@ func New[T any](cfg Config[T]) (*Series[T], error) {
 		gen:       1,
 		id:        seriesIDs.Add(1),
 		watermark: MinTimestamp,
+		time:      newTimeIndex(c.timeIndex),
+	}
+	if s.time != nil {
+		s.keyScratch = make([]timeKey, 0, c.maxReadBatch+1)
+		s.delKeys = make([]timeKey, 0, 1)
+		s.insKeys = make([]timeKey, 0, 1)
 	}
 	return s, nil
 }
@@ -114,7 +126,20 @@ func (s *Series[T]) appendLocked(v *T, m *InputMeta) (AppendResult, error) {
 		}
 		v = &c
 	}
-	return s.commit(v, m, p), nil
+	res := s.commit(v, m, p)
+	s.applyTime()
+	return res, nil
+}
+
+// applyTime hands the transaction's evicted and inserted keys to the time
+// index in one call (W-010) and resets the scratch.
+func (s *Series[T]) applyTime() {
+	if s.time == nil {
+		return
+	}
+	s.time.Apply(s.delKeys, s.insKeys)
+	s.delKeys = s.delKeys[:0]
+	s.insKeys = s.insKeys[:0]
 }
 
 // prepareMeta runs P-03 steps 1-4 against the given tracker state without
@@ -166,7 +191,11 @@ func (s *Series[T]) commit(v *T, m *InputMeta, p itemPlan) AppendResult {
 	res := AppendResult{Outcome: OutcomeAppended, Ref: Ref{Gen: s.gen, Seq: seq}, Flags: p.flags}
 
 	if evicted, ok := s.b.push(s.cfg.capacity); ok {
-		s.env.add(s.ring.eventTime(evicted))
+		et := s.ring.eventTime(evicted)
+		if s.time != nil {
+			s.delKeys = append(s.delKeys, timeKey{eventTime: et, seq: evicted})
+		}
+		s.env.add(et)
 		s.n.evicted++
 		res.Evicted = Ref{Gen: s.gen, Seq: evicted}
 	}
@@ -179,6 +208,9 @@ func (s *Series[T]) commit(v *T, m *InputMeta, p itemPlan) AppendResult {
 		epoch:       m.SourceEpoch,
 		flags:       flags,
 	})
+	if s.time != nil {
+		s.insKeys = append(s.insKeys, timeKey{eventTime: m.EventTime, seq: seq})
+	}
 
 	if !s.hasObserved || m.EventTime > s.maxObserved {
 		s.hasObserved = true
@@ -236,6 +268,9 @@ func (s *Series[T]) Clear() error {
 	}
 	s.gen++
 	s.ring.zero()
+	if s.time != nil {
+		s.time.Clear()
+	}
 	s.b.reset()
 	s.env = envelope{}
 	s.hasObserved = false

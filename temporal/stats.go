@@ -68,5 +68,13 @@ func (s *Series[T]) Stats() Stats {
 	if s.hasObserved {
 		st.MaxObservedEventTime = s.maxObserved
 	}
+	if s.time != nil {
+		if k, ok := s.time.Min(); ok {
+			st.MinEventTime = k.eventTime
+		}
+		if k, ok := s.time.Max(); ok {
+			st.MaxEventTime = k.eventTime
+		}
+	}
 	return st
 }
