@@ -12,7 +12,8 @@ Plan: `IMPLEMENTATION_PLAN.md`. Spec: `temporal_series_requirements.md`. Decisio
 | 4 Event-time point queries, status precedence, watermark gating | done |
 | 5 Batch time reads, TimeCursor pagination, Entries | done |
 | 6 Key indexes (single-record Append) | done |
-| 7 AppendBatch | next |
+| 7 AppendBatch | done |
+| 8 Subscriptions | next |
 
 ## Session 1 — Foundations and ring
 
@@ -93,7 +94,7 @@ Tests per requirement:
 - T-025, TI-001, C-002: `TestStructure_Imports` (btree only in its file; no reflect/unsafe; no sync.Map), `TestStructure_NoLockFields`, `TestStructure_BTreeNoLocks`
 - W-010, TI-007: `TestAppend_OneTimeIndexCallPerTransaction`
 - TI-008: `TestTimeIndexNone_NoScratch`; TI-002: `TestClear_KeepsTimeIndexMode`
-- W-009, TI-012: `TestAllocs_AppendByMode` (None 0; BTree measured 0 in steady state), `TestTimeIndex_BTreeAllocs` (all primitives 0)
+- W-009, TI-012: `TestAllocs_AppendByMode` (None 0; BTree ~0.06 allocs/op from node churn, see S7 note), `TestTimeIndex_BTreeAllocs` (all primitives 0)
 - T-002/T-010 in BTree mode: `TestModel_SeqPath/mode=1` now checks index invariants after every op (mutation-checked: dropping half of the deletes in Apply fails it).
 
 Open questions: none.
@@ -165,9 +166,34 @@ Tests per requirement:
 - K-003: `TestIndex_Binding`
 - K-011, Q-017: `TestIndex_ModeIndependence`
 - §12.1: `TestConfig_ValidateInvalid` (unknown policy, nil extractors)
-- T-026 (part), W-009: `TestAllocs_KeyIndexes` (lookups 0 allocs; Append with unique+multi index measured 0 in steady state)
+- T-026 (part), W-009: `TestAllocs_KeyIndexes` (lookups 0 allocs; Append with unique+multi index measured 0.0000 allocs/op with the exact counter in steady state)
 - T-002, T-010: `TestModel_SeqPath` (indexes in both modes; invariants after every op). Mutation checks: the E-012 `evictBelow` boundary and "Drop wins" each fail targeted tests and the model; removing the K-008 guard is an equivalent mutant (S6-08).
 
 Open questions: none.
 
 Known gaps: none for S6 scope. Batch staging (`beginBatch`/`stage`/`endBatch`) is implemented but first exercised in S7.
+
+## Session 7 — AppendBatch
+
+Done:
+- `batch.go`: `AppendBatch` (closed → empty no-op → ErrBatchTooLarge → prepare simulation → commit → one `applyTime` → one notify). `prepareBatch` simulates next Seq, oldest/len (per-item `evictBelow`), MaxObserved and the SourceSeq tracker; indexes stage each non-dropped item's key in the pending overlay (P-02). `commitBatch` applies plans in order; drops consume no Seq. Errors carry the batch position (S7-01).
+- Series scratch: `plans`, `cloned` (S7-06).
+- Model: `appendBatch` = the same Appends on a deep copy, adopted only if all succeed; failure moves only Rejected and the rejecting index's Conflicts. Random runs use batch sizes 0..Capacity+1 and assert both successful and failed batches occur.
+- Test infrastructure: `allocsPerOp` exact allocation counter replaces `testing.AllocsPerRun` in every allocation test (S7-04).
+
+Tests per requirement:
+- W-002, P-02: `TestAppendBatch_EquivalentToSequential` (direct oracle: random valid batches vs the same Appends one by one on a twin Series, both modes, Drop/Replace/KeepFirst indexes; results, Stats and contents equal)
+- T-011 (batch): `TestAppendBatch_IntraBatchConflicts` (Reject with BatchPos and no leaked overlay, Drop, Replace chain, KeepFirst, several indexes with Drop winning inside a batch)
+- T-012 (batch), E-012: `TestAppendBatch_KeysOfRowsEvictedInBatch` (capacities 1, 2, 5; reversed order still conflicts)
+- T-014 (batch), E-007: `TestAppendBatch_PanicNoStateChange` (extractor and clone panic at item 2)
+- W-003, P-09, W-008: `TestAppendBatch_Limits`
+- §5.3, §9.2: `TestAppendBatch_SequentialPolicies` (late and SourceSeq flags see earlier items; LateReject mid-batch; invalid input mid-batch)
+- W-010, §9.4: `TestAppendBatch_OneApply`
+- T-026, W-009: `TestAllocs_AppendBatch` (None: exactly 0; BTree reported, ~4 allocs per 64-record batch)
+- T-002: `TestModel_SeqPath` covers AppendBatch in both modes with indexes. Mutation checks: skipping `stage`, not advancing the simulated oldest, and not advancing the simulated MaxObserved each fail targeted tests and the model.
+
+Open questions: none.
+
+Known gaps:
+- W-002's "single notification" is structurally one `notify()` call per batch; it becomes observable and tested with subscriptions in S8.
+- B-tree node churn costs ~0.06 allocs/record (S7-05); to be quantified in S11.

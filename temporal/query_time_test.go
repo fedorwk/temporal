@@ -322,8 +322,8 @@ func TestAllocs_PointQueries(t *testing.T) {
 		"gated":             func() { s.AsOf(2950) },
 	}
 	for name, fn := range fns {
-		if n := testing.AllocsPerRun(500, fn); n != 0 {
-			t.Errorf("%s: %.2f allocs/op, want 0", name, n)
+		if n := allocsPerOp(500, fn); n != 0 {
+			t.Errorf("%s: %.4f allocs/op, want 0", name, n)
 		}
 	}
 }

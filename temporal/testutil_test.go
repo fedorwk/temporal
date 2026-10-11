@@ -3,6 +3,7 @@ package temporal
 import (
 	"flag"
 	"math/rand/v2"
+	"runtime"
 	"testing"
 	"time"
 )
@@ -80,4 +81,28 @@ func skipAllocTest(t *testing.T) {
 	if raceEnabled || debugAssert {
 		t.Skip("allocation counts are not meaningful under -race or temporaldebug")
 	}
+}
+
+// allocsPerOp runs f once to warm up, then measures runs calls, and returns
+// the exact average number of heap allocations per call. Unlike
+// testing.AllocsPerRun it does not truncate, so one allocation per call shows.
+// It reports the minimum of three measurements: an allocation made by f
+// appears in every measurement, while a stray runtime allocation does not.
+func allocsPerOp(runs int, f func()) float64 {
+	defer runtime.GOMAXPROCS(runtime.GOMAXPROCS(1))
+	f()
+	best := -1.0
+	for range 3 {
+		var before, after runtime.MemStats
+		runtime.ReadMemStats(&before)
+		for range runs {
+			f()
+		}
+		runtime.ReadMemStats(&after)
+		n := float64(after.Mallocs-before.Mallocs) / float64(runs)
+		if best < 0 || n < best {
+			best = n
+		}
+	}
+	return best
 }

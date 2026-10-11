@@ -576,8 +576,8 @@ func TestAllocs_BatchReads(t *testing.T) {
 		"NextN":          func() { dst, _ = s.NextN(dst[:0], 4000, 100) },
 	}
 	for name, fn := range fns {
-		if n := testing.AllocsPerRun(300, fn); n != 0 {
-			t.Errorf("%s: %.2f allocs/op, want 0", name, n)
+		if n := allocsPerOp(300, fn); n != 0 {
+			t.Errorf("%s: %.4f allocs/op, want 0", name, n)
 		}
 	}
 }

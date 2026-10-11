@@ -373,9 +373,9 @@ func TestTimeIndex_BTreeAllocs(t *testing.T) {
 		{"Descend", func() { buf, _ = x.Descend(buf[:0], timeKey{mid, seqMax}, 200) }},
 	}
 	for _, c := range checks {
-		if n := testing.AllocsPerRun(500, c.fn); n != 0 {
-			t.Errorf("%s: %.2f allocs/op, want 0", c.name, n)
+		if n := allocsPerOp(500, c.fn); n != 0 {
+			t.Errorf("%s: %.4f allocs/op, want 0", c.name, n)
 		}
 	}
-	t.Logf("B-tree Apply (1 delete + 1 insert) steady state: %.3f allocs/op", testing.AllocsPerRun(5000, step))
+	t.Logf("B-tree Apply (1 delete + 1 insert) steady state: %.4f allocs/op", allocsPerOp(5000, step))
 }

@@ -193,6 +193,59 @@ func (m *model) append(v int, in InputMeta) (AppendResult, error) {
 	return res, nil
 }
 
+// clone deep-copies the model state.
+func (m *model) clone() *model {
+	c := *m
+	c.recs = slices.Clone(m.recs)
+	c.slots = make([][]islot, len(m.slots))
+	for i := range m.slots {
+		c.slots[i] = slices.Clone(m.slots[i])
+	}
+	c.idx = make([]*modelIndex, len(m.idx))
+	for i, ix := range m.idx {
+		cp := *ix
+		c.idx[i] = &cp
+	}
+	return &c
+}
+
+// appendBatch follows W-002, W-003, P-02 and P-09: the same Appends in order
+// on a copy, adopted only if every item succeeds. A failure moves only the
+// diagnostic counters (P-04): Rejected once, and Conflicts of the rejecting
+// index.
+func (m *model) appendBatch(items []Input[int]) ([]AppendResult, error) {
+	switch {
+	case m.closed:
+		return nil, ErrClosed
+	case len(items) == 0:
+		return nil, nil
+	case len(items) > m.capacity:
+		m.rejected++
+		return nil, ErrBatchTooLarge
+	}
+	c := m.clone()
+	var out []AppendResult
+	for i, it := range items {
+		res, err := c.append(it.Value, it.Meta)
+		if err != nil {
+			m.rejected++
+			var ce *ConflictError
+			if errors.As(err, &ce) {
+				ce.BatchPos = i
+				for _, ix := range m.idx {
+					if ix.name == ce.Index {
+						ix.conflicts++
+					}
+				}
+			}
+			return nil, err
+		}
+		out = append(out, res)
+	}
+	*m = *c
+	return out, nil
+}
+
 func (m *model) find(seq Seq) (Entry[int], bool) {
 	for _, e := range m.recs {
 		if e.Meta.Ref.Seq == seq {
@@ -912,7 +965,8 @@ func TestModel_SeqPath(t *testing.T) {
 			if mode == TimeIndexNone {
 				wantBatch = []string{"TimeIndexDisabled"}
 			}
-			wantBatch = append(wantBatch, "dropped", "replaced/keptFirst", "conflict", "extractor panic")
+			wantBatch = append(wantBatch, "dropped", "replaced/keptFirst", "conflict", "extractor panic",
+				"batch ok", "batch failed")
 			for _, k := range wantBatch {
 				if batchSeen[k] == 0 && iters(200) >= 50 {
 					t.Errorf("batch reads never produced %q (seen %v)", k, batchSeen)
@@ -951,7 +1005,7 @@ func runSeqModel(t *testing.T, r *rand.Rand, mode TimeIndexMode, run int, seen m
 	steps := 50 + r.IntN(250)
 	for step := range steps {
 		switch op := r.IntN(100); {
-		case op < 40:
+		case op < 34:
 			v, in := g.nextValue(), g.meta()
 			got, gotErr := s.Append(v, in)
 			want, wantErr := m.append(v, in)
@@ -967,6 +1021,23 @@ func runSeqModel(t *testing.T, r *rand.Rand, mode TimeIndexMode, run int, seen m
 				batchSeen["conflict"]++
 			case errors.Is(gotErr, ErrCallbackPanic):
 				batchSeen["extractor panic"]++
+			}
+		case op < 40:
+			items := make([]Input[int], r.IntN(cfg.Capacity+2))
+			for i := range items {
+				items[i] = Input[int]{Value: g.nextValue(), Meta: g.meta()}
+			}
+			dst := []AppendResult{{Index: "prefix"}}
+			got, gotErr := s.AppendBatch(dst, items)
+			want, wantErr := m.appendBatch(items)
+			if !errMatches(gotErr, wantErr) || got[0].Index != "prefix" || !slices.Equal(got[1:], want) {
+				fail(step, "AppendBatch", "%d items: got (%+v, %v), want (%+v, %v)", len(items), got, gotErr, want, wantErr)
+			}
+			switch {
+			case gotErr != nil:
+				batchSeen["batch failed"]++
+			case len(items) > 1:
+				batchSeen["batch ok"]++
 			}
 		case op < 45:
 			ref := randomRef(r, m)

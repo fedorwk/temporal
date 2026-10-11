@@ -58,10 +58,12 @@ type Series[T any] struct {
 	id   uint64
 
 	// Series-owned scratch, valid only under mu. Allocated only when time != nil.
-	keyScratch []timeKey // index query results, cap MaxReadBatch+1
-	delKeys    []timeKey // commit-phase evictions
-	insKeys    []timeKey // commit-phase insertions
-	xe         Entry[T]  // the entry handed to extractors; zeroed after use
+	keyScratch []timeKey  // index query results, cap MaxReadBatch+1
+	delKeys    []timeKey  // commit-phase evictions
+	insKeys    []timeKey  // commit-phase insertions
+	xe         Entry[T]   // the entry handed to extractors; zeroed after use
+	plans      []itemPlan // AppendBatch prepare results, by batch position
+	cloned     []T        // AppendBatch CloneOnWrite values; cleared after use
 
 	env         envelope
 	hasObserved bool
@@ -99,6 +101,7 @@ func New[T any](cfg Config[T]) (*Series[T], error) {
 		s.delKeys = make([]timeKey, 0, 1)
 		s.insKeys = make([]timeKey, 0, 1)
 	}
+	s.plans = make([]itemPlan, 0, min(c.capacity, 16))
 	s.idx = append([]Index[T](nil), c.indexes...)
 	for _, ix := range s.idx {
 		ix.bind(s, c.capacity)

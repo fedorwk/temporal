@@ -431,9 +431,9 @@ func TestAllocs_KeyIndexes(t *testing.T) {
 		"Append duplicate":     func() { s.Append(trade{ID: id, Symbol: "BTC"}, at(Timestamp(id))) },
 	}
 	for name, fn := range fns {
-		if n := testing.AllocsPerRun(500, fn); n != 0 {
-			t.Errorf("%s: %.2f allocs/op, want 0", name, n)
+		if n := allocsPerOp(500, fn); n != 0 {
+			t.Errorf("%s: %.4f allocs/op, want 0", name, n)
 		}
 	}
-	t.Logf("Append with unique+multi index, steady state: %.3f allocs/op", testing.AllocsPerRun(5000, appendOne))
+	t.Logf("Append with unique+multi index, steady state: %.4f allocs/op", allocsPerOp(5000, appendOne))
 }

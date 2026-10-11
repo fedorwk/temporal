@@ -661,8 +661,8 @@ func TestAllocs_SeqPath(t *testing.T) {
 		{"SetWatermark", func() { s.SetWatermark(ts) }},
 	}
 	for _, c := range checks {
-		if n := testing.AllocsPerRun(200, c.fn); n != 0 {
-			t.Errorf("%s: %.1f allocs/op, want 0", c.name, n)
+		if n := allocsPerOp(200, c.fn); n != 0 {
+			t.Errorf("%s: %.4f allocs/op, want 0", c.name, n)
 		}
 	}
 }

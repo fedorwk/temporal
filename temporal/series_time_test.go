@@ -77,7 +77,7 @@ func TestAllocs_AppendByMode(t *testing.T) {
 		for range 4096 {
 			appendOne()
 		}
-		n := testing.AllocsPerRun(10000, appendOne)
+		n := allocsPerOp(10000, appendOne)
 		t.Logf("mode %d: Append steady state %.4f allocs/op", mode, n)
 		if mode == TimeIndexNone && n != 0 {
 			t.Errorf("TimeIndexNone Append: %.4f allocs/op, want 0", n)
