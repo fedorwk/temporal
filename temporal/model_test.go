@@ -959,14 +959,14 @@ func TestModel_SeqPath(t *testing.T) {
 			seen := map[Status]int{}
 			batchSeen := map[string]int{}
 			for run := range iters(200) {
-				runSeqModel(t, r, mode, run, seen, batchSeen)
+				runSeqModel(t, r, mode, run, 0, seen, batchSeen)
 			}
 			wantBatch := []string{"OK", "NotFound", "Expired", "NotReady", "Invalid", "Reset", "truncated", "continued"}
 			if mode == TimeIndexNone {
 				wantBatch = []string{"TimeIndexDisabled"}
 			}
 			wantBatch = append(wantBatch, "dropped", "replaced/keptFirst", "conflict", "extractor panic",
-				"batch ok", "batch failed")
+				"batch ok", "batch failed", "sub lag", "sub reset", "sub skip")
 			for _, k := range wantBatch {
 				if batchSeen[k] == 0 && iters(200) >= 200 {
 					t.Errorf("batch reads never produced %q (seen %v)", k, batchSeen)
@@ -988,7 +988,17 @@ func TestModel_SeqPath(t *testing.T) {
 	}
 }
 
-func runSeqModel(t *testing.T, r *rand.Rand, mode TimeIndexMode, run int, seen map[Status]int, batchSeen map[string]int) {
+// runSeqModel runs one random scenario of steps operations (0 = random
+// length) against a real Series and the model.
+func runSeqModel(
+	t *testing.T,
+	r *rand.Rand,
+	mode TimeIndexMode,
+	run int,
+	steps int,
+	seen map[Status]int,
+	batchSeen map[string]int,
+) {
 	t.Helper()
 	cfg := randomConfig(r, mode)
 	m := newModel(cfg)
@@ -996,6 +1006,7 @@ func runSeqModel(t *testing.T, r *rand.Rand, mode TimeIndexMode, run int, seen m
 	s := mustNew(t, cfg)
 	m.sid = s.id
 	var cursors []TimeCursor // every cursor returned so far, including stale ones
+	var subs []subPair
 	g := &inputGen{r: r, now: Timestamp(r.IntN(1000))}
 	var buf []Entry[int]
 
@@ -1004,7 +1015,9 @@ func runSeqModel(t *testing.T, r *rand.Rand, mode TimeIndexMode, run int, seen m
 		t.Fatalf("run %d step %d (%s), cfg %+v: %s", run, step, op, cfg, fmt.Sprintf(format, args...))
 	}
 
-	steps := 50 + r.IntN(250)
+	if steps == 0 {
+		steps = 50 + r.IntN(250)
+	}
 	for step := range steps {
 		switch op := r.IntN(100); {
 		case op < 34:
@@ -1082,7 +1095,7 @@ func runSeqModel(t *testing.T, r *rand.Rand, mode TimeIndexMode, run int, seen m
 				fail(step, "ReadFrom", "entries %+v, want %+v", got[prefix:], want)
 			}
 			buf = got
-		case op < 74:
+		case op < 72:
 			q, ts := pointQuery(r.IntN(int(numPointQueries))), randomQueryTime(r, m, g)
 			got, gotSt := q.run(s, ts)
 			want, wantSt := m.point(q, ts)
@@ -1093,10 +1106,14 @@ func runSeqModel(t *testing.T, r *rand.Rand, mode TimeIndexMode, run int, seen m
 			if gotSt == StatusOK && (q == qAsOf || q == qLastAt) && got.Meta.EventTime > ts {
 				fail(step, q.String(), "looked ahead: EventTime %d > ts %d", got.Meta.EventTime, ts) // §16.3
 			}
-		case op < 89:
+		case op < 85:
 			name, next := runBatchOp(t, r, s, m, g, &cursors, batchSeen)
 			if name != "" {
 				fail(step, name, "%s", next)
+			}
+		case op < 89:
+			if name, msg := runSubOp(r, s, m, &subs, batchSeen); name != "" {
+				fail(step, name, "%s", msg)
 			}
 		case op < 92:
 			if gotErr, wantErr := s.Clear(), m.clear(); !sameErr(gotErr, wantErr) {
@@ -1114,7 +1131,9 @@ func runSeqModel(t *testing.T, r *rand.Rand, mode TimeIndexMode, run int, seen m
 				fail(step, "SetWatermark", "ts %d: got %v, want %v", ts, got, want)
 			}
 		default:
-			if r.IntN(4) == 0 {
+			// About 0.3 closes per run whatever its length, so long runs do not
+			// spend most of their steps on a closed Series.
+			if r.IntN(max(1, steps/15)) == 0 {
 				if err := s.Close(); err != nil {
 					fail(step, "Close", "%v", err)
 				}
@@ -1122,7 +1141,9 @@ func runSeqModel(t *testing.T, r *rand.Rand, mode TimeIndexMode, run int, seen m
 			}
 		}
 
-		if got, want := s.Stats(), m.stats(); !reflect.DeepEqual(got, want) {
+		want := m.stats()
+		want.Subscribers = m.openSubs(subs)
+		if got := s.Stats(); !reflect.DeepEqual(got, want) {
 			fail(step, "Stats", "got %+v\nwant %+v", got, want)
 		}
 		if s.Len() != len(m.recs) || s.OldestRef() != m.oldestRef() || s.NewestRef() != m.newestRef() ||

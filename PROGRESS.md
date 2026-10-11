@@ -15,7 +15,8 @@ Plan: `IMPLEMENTATION_PLAN.md`. Spec: `temporal_series_requirements.md`. Decisio
 | 7 AppendBatch | done |
 | 8 Subscriptions | done |
 | 9 Derived series and watermark propagation | done |
-| 10 Verification hardening | next |
+| 10 Verification hardening | done |
+| 11 Benchmarks, allocation acceptance, docs, DoD audit | next |
 
 ## Session 1 — Foundations and ring
 
@@ -224,7 +225,7 @@ Tests per requirement:
 
 Open questions: none.
 
-Known gaps: subscriptions are not yet part of the random model test; S10's fuzz target adds Subscribe/TryNext/Seek.
+Known gaps: none (subscriptions joined the random model and fuzz target in S10).
 
 ## Session 9 — Derived series and watermark propagation
 
@@ -246,3 +247,26 @@ Open questions:
 - Per §17.3, watermark changes do not wake subscribers, so a deriver propagates a new source watermark only when the next source record arrives. On a quiet market (no trades for a while) a derived candle series' watermark therefore stays behind the raw series. Implemented as specified; a possible extension is to let derivers (not general subscribers) also wake on watermark changes.
 
 Known gaps: none for S9 scope.
+
+## Session 10 — Verification hardening
+
+Done:
+- `model_sub_test.go`: subscription model (start positions, §17.2 read step, lag/skip, reset, clamp, Seek, Close); random runs now also Subscribe/TryNext/Seek/Close and compare cursors, `Skipped()`, batches, typed lag errors and `Stats.Subscribers`.
+- `fuzz_test.go`: `FuzzSeries` (T-003) drives `runSeqModel` from the input bytes via `byteSource`: capacity 1..8, both modes, 0-2 indexes with random policies and extractors (incl. panicking), every operation in the model (Append, AppendBatch, all Seq/point/batch reads, Continue with stale/foreign/future cursors, key lookups, subscriptions, Clear, Close, SetWatermark), CheckInvariants after each op. Seed corpus: six `f.Add` inputs of 0-4096 bytes.
+- `TestModel_LongRuns` (T-002): 3000-step overwrite-heavy runs at capacities 1..8 in both modes.
+- `verification_test.go`: `TestModeEquivalence` (T-022), `TestRaceStress_NoTornReads` (T-005), `TestClone_DeepOwnershipAllPaths` (T-006).
+- `invariants_test.go`: `TestCheckInvariants_DetectsCorruption` (T-010: 17 corruptions of bounds, envelope, trackers, ring metadata, time index, unique and multi indexes are each detected), `TestMultiIndex_InvalidOrder`.
+- `MultiIndex.Get` rejects an unknown Order (S10-01).
+- Lock-discipline audit recorded in `DECISIONS.md`.
+
+Results:
+- `go test -race ./...` green (via `scripts/check.sh`).
+- Statement coverage: 95.3% (target ≥ 90%). Uncovered: `noTimeIndex` no-op methods, debug-only helpers, and some invariant error branches.
+- Fuzzing: `go test -run='^$' -fuzz=FuzzSeries -fuzztime=10m` passed: 7.2M executions, 335 corpus entries, no failures (Apple M4, 10 workers).
+
+Tests per requirement:
+- T-002: `TestModel_SeqPath`, `TestModel_LongRuns`; T-003: `FuzzSeries`; T-005: `TestRaceStress_NoTornReads`; T-006: `TestClone_DeepOwnershipAllPaths` (all 21 read paths under CloneOnRead and CloneOnReadWrite; producer buffers under CloneOnWrite and CloneOnReadWrite for Append and AppendBatch); T-010: model/fuzz after every op plus `TestCheckInvariants_DetectsCorruption`; T-022: `TestModeEquivalence`.
+
+Open questions: none new.
+
+Known gaps: none for S10 scope.

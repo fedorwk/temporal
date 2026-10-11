@@ -85,3 +85,30 @@ Decisions not settled by `temporal_series_requirements.md`, or deviations from i
 | S9-04 | 9 | Worker endings: ctx cancel or `Stop` → Stopped, `Err()` nil; source closed and drained → Stopped, `Err()` ErrClosed; derive error or panic (`*CallbackPanicError{Callback: "derive:<name>"}`), append error, lag (LagFail) or reset → Failed with the error. The worker always closes its subscription. | D-004 lists the failures; a closed source is a graceful end. | D-004 |
 | S9-05 | 9 | `StartDerived` argument errors (nil series or function, source == destination, invalid options) return ErrInvalidConfig. | DeriveOptions is configuration. | §18.2 |
 | S9-06 | 9 | A batch that yields no outputs skips AppendBatch but still advances the processed cursor and may propagate the watermark. | Nothing to commit, but the inputs are processed. | D-003, §18.4 |
+| S10-01 | 10 | `MultiIndex.Get` with an unknown `Order` returns StatusInvalid (it was silently treated as Ascending). | A malformed request, like an unbound handle (S6-04). | Q-010, §7.1 |
+| S10-02 | 10 | Random model runs scale the probability of `Close` to the run length (~0.3 closes per run), and the fuzz target derives its decisions from the input bytes through `byteSource` (falling back to a PCG seeded from the bytes when they run out). | Long runs otherwise spent most steps on a closed Series; a constant-zero source would hang `rand.IntN`. | T-002, T-003 |
+
+## Lock-discipline audit (Session 10)
+
+Every acquisition of a Series mutex (`s.mu`), as of commit "session 10". "deferred" means `Lock()` is immediately followed by `defer Unlock()` (C-007).
+
+| Site | Kind | Unlock | User code under the lock | Panic safety |
+|---|---|---|---|---|
+| `Append` (series.go) | write | explicit, before `notify` | Clone (CloneOnWrite) via `callClone`; extractors via `keyCore.extract` — prepare phase only | both recover into `*CallbackPanicError`; the commit phase calls no user code (§9.3) |
+| `AppendBatch` (batch.go) | write | explicit, before `notify` | same as Append, per item, prepare phase only | same; `prepareBatch` clears the clone scratch and ends index batches on every exit |
+| `Clear`, `Close` (series.go) | write | explicit, before `notify` | none | no user code |
+| `SetWatermark`, `Watermark` (watermark.go) | write/read | deferred | none | — |
+| `Len`, `Gen`, `OldestRef`, `NewestRef`, `Stats`, `CheckInvariants` | read | deferred | none | — |
+| `Get`, `Latest`, `ReadFrom` (query.go) | read | deferred | Clone (CloneOnRead) in `copyOut` | panic propagates after the deferred unlock (T-015) |
+| point reads (query_time.go, 7 sites) | read | deferred | Clone (CloneOnRead) in `copyOut` | same |
+| batch reads `Range`, `RangeValues`, `AtAll`, `Continue`, `ContinueValues`, `PrevN`, `NextN` (query_batch.go) | read | deferred | Clone (CloneOnRead) in `copyEntries`/`copyValues` | same |
+| `Entries` status check (query_batch.go) | read | explicit, no code between | none | pages use `Range`/`Continue` (deferred); nothing is yielded under the lock (C-008) |
+| key lookups via `keyCore.lockedSeries` (key_index.go, 8 methods) | read | deferred by each caller | Clone (CloneOnRead) in `copyOut` | same as other reads |
+| `Subscribe`, `unsubscribe`, `poll`, `Seek` (subscription.go) | read/write | deferred | Clone (CloneOnRead) in `poll` | cursor and `skipped` change only after the copy succeeds (S-005) |
+
+Other synchronization:
+- `bindMu` (package-level) serializes index binding in `New`; it is held only inside `New`, while the new Series is not yet visible to any other goroutine, so no lock-order cycle with a Series mutex is possible.
+- `Deriver.mu` guards only `DeriverStatus`; it is never held while calling the derive function or any Series method.
+- `Series.subs` is an `atomic.Pointer` replaced copy-on-write under `s.mu`; `notify` reads it without the lock and only after the mutex is released (C-005). Notify call sites: Append, AppendBatch, Clear, Close.
+- The derive function runs on the worker goroutine between `Subscription.next` and `dst.AppendBatch`, outside every Series lock (D-002).
+- Index implementations (time and key) hold no locks and call no user code or Series methods (T-025 enforces the lock part structurally).

@@ -496,8 +496,11 @@ func (ix *MultiIndex[T, K]) stats() IndexStats {
 
 // Get appends to dst the records with key k in the requested Seq order, up to
 // min(limit, MaxReadBatch). Status is OK if any record was returned, otherwise
-// NotFound; an unbound handle returns StatusInvalid.
+// NotFound; an unbound handle or an unknown Order returns StatusInvalid.
 func (ix *MultiIndex[T, K]) Get(dst []Entry[T], k K, limit int, o Order) ([]Entry[T], ReadInfo) {
+	if !o.valid() {
+		return dst, ReadInfo{Status: StatusInvalid}
+	}
 	s := ix.lockedSeries()
 	if s == nil {
 		return dst, ReadInfo{Status: StatusInvalid}
