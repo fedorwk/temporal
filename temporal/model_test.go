@@ -8,6 +8,7 @@ import (
 	"math/rand/v2"
 	"reflect"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 )
@@ -24,6 +25,7 @@ type model struct {
 	tolerance int64
 	srcPolicy SourceSeqPolicy
 	gate      bool
+	sid       uint64 // identity of the Series under test, for expected cursors
 
 	gen     Gen
 	recs    []Entry[int] // retained, ascending Seq
@@ -368,6 +370,191 @@ func (m *model) point(q pointQuery, ts Timestamp) (Entry[int], Status) {
 	}
 }
 
+// gatedBelow is the Range/Continue gate: to-1 > watermark, written without
+// computing to-1.
+func (m *model) gatedBelow(to Timestamp) bool {
+	return m.gate && m.watermark != MaxTimestamp && to > m.watermark+1
+}
+
+func (m *model) oldestInfo() ReadInfo { return ReadInfo{Oldest: m.oldestRef()} }
+
+// ascendFrom returns the retained entries with key > after (or >= start when
+// inclusive) and EventTime < bound, as the model's ascending scan.
+func (m *model) scan(pred func(Entry[int]) bool) []Entry[int] {
+	var out []Entry[int]
+	for _, e := range m.byTime() {
+		if pred(e) {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
+func (m *model) limit(l int) int {
+	if l <= 0 || l > m.maxBatch {
+		return m.maxBatch
+	}
+	return l
+}
+
+// page cuts matches to the limit and fills a continuable ReadInfo.
+func (m *model) page(matches []Entry[int], lim int, bound Timestamp, evicted bool) ([]Entry[int], ReadInfo) {
+	info := m.oldestInfo()
+	info.Evicted = evicted
+	if len(matches) > lim {
+		matches, info.Truncated = matches[:lim], true
+	}
+	info.N = len(matches)
+	if len(matches) == 0 {
+		info.Status = StatusNotFound
+		if evicted {
+			info.Status = StatusExpired
+		}
+		return nil, info
+	}
+	last := matches[len(matches)-1]
+	info.Status, info.LastRef = StatusOK, last.Meta.Ref
+	if info.Truncated {
+		info.Next = makeCursor(m.sid, m.gen, timeKey{last.Meta.EventTime, last.Meta.Ref.Seq}, bound)
+	}
+	return matches, info
+}
+
+func (m *model) envIntersects(from, to Timestamp) bool {
+	return m.evicted && m.minEvict < to && m.maxEvi >= from
+}
+
+// rangeQ follows Q-005, E-002, §7.4 and §19.
+func (m *model) rangeQ(from, to Timestamp, limit int) ([]Entry[int], ReadInfo) {
+	info := m.oldestInfo()
+	switch {
+	case m.mode == TimeIndexNone:
+		info.Status = StatusTimeIndexDisabled
+		return nil, info
+	case m.gatedBelow(to):
+		info.Status = StatusNotReady
+		return nil, info
+	case from >= to:
+		info.Status = StatusNotFound
+		return nil, info
+	}
+	matches := m.scan(func(e Entry[int]) bool { return from <= e.Meta.EventTime && e.Meta.EventTime < to })
+	return m.page(matches, m.limit(limit), to, m.envIntersects(from, to))
+}
+
+// atAll follows Q-002, §8.1 and P-05.
+func (m *model) atAll(ts Timestamp, limit int) ([]Entry[int], ReadInfo) {
+	info := m.oldestInfo()
+	switch {
+	case m.mode == TimeIndexNone:
+		info.Status = StatusTimeIndexDisabled
+		return nil, info
+	case m.gate && ts > m.watermark:
+		info.Status = StatusNotReady
+		return nil, info
+	case ts == MaxTimestamp:
+		info.Status = StatusNotFound
+		return nil, info
+	}
+	matches := m.scan(func(e Entry[int]) bool { return e.Meta.EventTime == ts })
+	return m.page(matches, m.limit(limit), ts+1, m.evicted && m.minEvict <= ts && ts <= m.maxEvi)
+}
+
+// continueQ follows §8.4, E-016 and P-14.
+func (m *model) continueQ(c TimeCursor, limit int) ([]Entry[int], ReadInfo) {
+	info := m.oldestInfo()
+	switch {
+	case m.mode == TimeIndexNone:
+		info.Status = StatusTimeIndexDisabled
+		return nil, info
+	case c == (TimeCursor{}) || c.series != m.sid || c.gen > m.gen:
+		info.Status = StatusInvalid
+		return nil, info
+	case c.gen < m.gen:
+		info.Status = StatusReset
+		return nil, info
+	}
+	last, bound := c.decode()
+	if m.gatedBelow(bound) {
+		info.Status = StatusNotReady
+		return nil, info
+	}
+	matches := m.scan(func(e Entry[int]) bool {
+		k := timeKey{e.Meta.EventTime, e.Meta.Ref.Seq}
+		return keyLess(last, k) && e.Meta.EventTime < bound
+	})
+	return m.page(matches, m.limit(limit), bound, m.envIntersects(last.eventTime, bound))
+}
+
+// prevN follows Q-006, §8.1 and P-05.
+func (m *model) prevN(ts Timestamp, n int) ([]Entry[int], ReadInfo) {
+	info := m.oldestInfo()
+	switch {
+	case m.mode == TimeIndexNone:
+		info.Status = StatusTimeIndexDisabled
+		return nil, info
+	case m.gate && ts > m.watermark:
+		info.Status = StatusNotReady
+		return nil, info
+	case n <= 0:
+		info.Status = StatusNotFound
+		return nil, info
+	}
+	matches := m.scan(func(e Entry[int]) bool { return e.Meta.EventTime <= ts })
+	lim := min(n, m.maxBatch)
+	if len(matches) > lim {
+		matches, info.Truncated = matches[len(matches)-lim:], true
+	}
+	info.N, info.Evicted = len(matches), m.evicted && m.minEvict <= ts
+	if len(matches) == 0 {
+		info.Status = StatusNotFound
+		if info.Evicted {
+			info.Status = StatusExpired
+		}
+		return nil, info
+	}
+	info.Status, info.LastRef = StatusOK, matches[len(matches)-1].Meta.Ref
+	return matches, info
+}
+
+// nextN follows Q-006, §8.1, P-05, P-13 and S4-01.
+func (m *model) nextN(ts Timestamp, n int) ([]Entry[int], ReadInfo) {
+	info := m.oldestInfo()
+	switch {
+	case m.mode == TimeIndexNone:
+		info.Status = StatusTimeIndexDisabled
+		return nil, info
+	case n <= 0:
+		info.Status = StatusNotFound
+		return nil, info
+	}
+	gated := m.gate && m.watermark != MaxTimestamp
+	all := m.scan(func(e Entry[int]) bool { return e.Meta.EventTime > ts })
+	var matches []Entry[int]
+	for _, e := range all {
+		if !gated || e.Meta.EventTime <= m.watermark {
+			matches = append(matches, e)
+		}
+	}
+	lim := min(n, m.maxBatch)
+	if len(matches) > lim {
+		matches, info.Truncated = matches[:lim], true
+	}
+	info.N, info.Evicted = len(matches), m.evicted && m.maxEvi > ts
+	switch {
+	case len(matches) > 0:
+		info.Status, info.LastRef = StatusOK, matches[len(matches)-1].Meta.Ref
+		return matches, info
+	case gated && (len(all) > 0 || !info.Evicted):
+		info.Status = StatusNotReady
+	case info.Evicted:
+		info.Status = StatusExpired
+	default:
+		info.Status = StatusNotFound
+	}
+	return nil, info
+}
+
 // randomQueryTime picks query timestamps near the data: retained EventTimes
 // (for exact matches), neighbours, the recent range and the sentinels.
 func randomQueryTime(r *rand.Rand, m *model, g *inputGen) Timestamp {
@@ -442,6 +629,140 @@ func (m *model) stats() Stats {
 		}
 	}
 	return st
+}
+
+// satAdd adds d to ts, clamping to the sentinels.
+func satAdd(ts Timestamp, d int64) Timestamp {
+	switch {
+	case d > 0 && ts > MaxTimestamp-Timestamp(d):
+		return MaxTimestamp
+	case d < 0 && ts < MinTimestamp-Timestamp(d):
+		return MinTimestamp
+	}
+	return ts + Timestamp(d)
+}
+
+// runBatchOp runs one random event-time batch read against the Series and the
+// model. It returns a non-empty name and a description on mismatch.
+func runBatchOp(
+	t *testing.T,
+	r *rand.Rand,
+	s *Series[int],
+	m *model,
+	g *inputGen,
+	cursors *[]TimeCursor,
+	seen map[string]int,
+) (string, string) {
+	t.Helper()
+	limit := r.IntN(8) - 1
+	prefix := r.IntN(2)
+	dst := make([]Entry[int], prefix, prefix+r.IntN(4))
+	vdst := make([]int, prefix, prefix+r.IntN(4))
+	for i := range prefix {
+		dst[i] = Entry[int]{Value: -7}
+		vdst[i] = -7
+	}
+
+	var name string
+	var got []Entry[int]
+	var gotVals []int
+	var gotInfo, wantInfo ReadInfo
+	var want []Entry[int]
+	values := false
+
+	switch kind := r.IntN(7); kind {
+	case 0, 1:
+		from := randomQueryTime(r, m, g)
+		to := satAdd(from, int64(r.IntN(50)-5))
+		if r.IntN(8) == 0 {
+			to = randomQueryTime(r, m, g)
+		}
+		want, wantInfo = m.rangeQ(from, to, limit)
+		if kind == 0 {
+			name = fmt.Sprintf("Range(%d, %d, %d)", from, to, limit)
+			got, gotInfo = s.Range(dst, from, to, limit)
+		} else {
+			name = fmt.Sprintf("RangeValues(%d, %d, %d)", from, to, limit)
+			gotVals, gotInfo = s.RangeValues(vdst, from, to, limit)
+			values = true
+		}
+	case 2:
+		ts := randomQueryTime(r, m, g)
+		name = fmt.Sprintf("AtAll(%d, %d)", ts, limit)
+		want, wantInfo = m.atAll(ts, limit)
+		got, gotInfo = s.AtAll(dst, ts, limit)
+	case 3, 4:
+		var c TimeCursor
+		switch n := r.IntN(10); {
+		case n < 7 && len(*cursors) > 0:
+			c = (*cursors)[r.IntN(len(*cursors))]
+		case n < 8:
+			c = makeCursor(m.sid+1_000_000, m.gen, timeKey{g.now, 1}, MaxTimestamp-1) // foreign
+		case n < 9:
+			c = makeCursor(m.sid, m.gen+1, timeKey{g.now, 1}, MaxTimestamp-1) // future generation
+		}
+		want, wantInfo = m.continueQ(c, limit)
+		if kind == 3 {
+			name = fmt.Sprintf("Continue(%+v, %d)", c, limit)
+			got, gotInfo = s.Continue(dst, c, limit)
+		} else {
+			name = fmt.Sprintf("ContinueValues(%+v, %d)", c, limit)
+			gotVals, gotInfo = s.ContinueValues(vdst, c, limit)
+			values = true
+		}
+	case 5:
+		ts, n := randomQueryTime(r, m, g), r.IntN(8)-1
+		name = fmt.Sprintf("PrevN(%d, %d)", ts, n)
+		want, wantInfo = m.prevN(ts, n)
+		got, gotInfo = s.PrevN(dst, ts, n)
+		if gotInfo.N > 0 {
+			if e, _ := s.AsOf(ts); e != got[len(got)-1] && !(m.gate && ts > m.watermark) {
+				return name, fmt.Sprintf("last entry %+v != AsOf %+v (Q-006)", got[len(got)-1], e)
+			}
+			for _, e := range got[prefix:] {
+				if e.Meta.EventTime > ts {
+					return name, "looked ahead (§16.3)"
+				}
+			}
+		}
+	default:
+		ts, n := randomQueryTime(r, m, g), r.IntN(8)-1
+		name = fmt.Sprintf("NextN(%d, %d)", ts, n)
+		want, wantInfo = m.nextN(ts, n)
+		got, gotInfo = s.NextN(dst, ts, n)
+	}
+
+	if gotInfo != wantInfo {
+		return name, fmt.Sprintf("info %+v, want %+v", gotInfo, wantInfo)
+	}
+	seen[gotInfo.Status.String()]++
+	if gotInfo.Truncated {
+		seen["truncated"]++
+	}
+	if strings.HasPrefix(name, "Continue") && gotInfo.Status == StatusOK {
+		seen["continued"]++
+	}
+	if !gotInfo.Next.IsZero() {
+		*cursors = append(*cursors, gotInfo.Next)
+	}
+	if values {
+		if len(gotVals) != prefix+len(want) || (prefix > 0 && gotVals[0] != -7) {
+			return name, fmt.Sprintf("values %v, want prefix %d + %d entries", gotVals, prefix, len(want))
+		}
+		for i, e := range want {
+			if gotVals[prefix+i] != e.Value {
+				return name, fmt.Sprintf("values %v, want %+v", gotVals[prefix:], want)
+			}
+		}
+		return "", ""
+	}
+	if len(got) != prefix+len(want) || (prefix > 0 && got[0].Value != -7) {
+		return name, fmt.Sprintf("entries %+v, want prefix %d + %+v", got, prefix, want)
+	}
+	if len(want) > 0 && !slices.Equal(got[prefix:], want) {
+		return name, fmt.Sprintf("entries %+v, want %+v", got[prefix:], want)
+	}
+	return "", ""
 }
 
 // gen produces random but feed-like inputs: mostly increasing event times
@@ -536,8 +857,18 @@ func TestModel_SeqPath(t *testing.T) {
 		t.Run(fmt.Sprintf("mode=%d", mode), func(t *testing.T) {
 			r, _ := newRand(t)
 			seen := map[Status]int{}
+			batchSeen := map[string]int{}
 			for run := range iters(200) {
-				runSeqModel(t, r, mode, run, seen)
+				runSeqModel(t, r, mode, run, seen, batchSeen)
+			}
+			wantBatch := []string{"OK", "NotFound", "Expired", "NotReady", "Invalid", "Reset", "truncated", "continued"}
+			if mode == TimeIndexNone {
+				wantBatch = []string{"TimeIndexDisabled"}
+			}
+			for _, k := range wantBatch {
+				if batchSeen[k] == 0 && iters(200) >= 50 {
+					t.Errorf("batch reads never produced %q (seen %v)", k, batchSeen)
+				}
 			}
 			// Guard against a vacuous run: every point-query status must occur.
 			want := []Status{StatusOK, StatusNotFound, StatusExpired, StatusNotReady}
@@ -553,11 +884,13 @@ func TestModel_SeqPath(t *testing.T) {
 	}
 }
 
-func runSeqModel(t *testing.T, r *rand.Rand, mode TimeIndexMode, run int, seen map[Status]int) {
+func runSeqModel(t *testing.T, r *rand.Rand, mode TimeIndexMode, run int, seen map[Status]int, batchSeen map[string]int) {
 	t.Helper()
 	cfg := randomConfig(r, mode)
 	s := mustNew(t, cfg)
 	m := newModel(cfg)
+	m.sid = s.id
+	var cursors []TimeCursor // every cursor returned so far, including stale ones
 	g := &inputGen{r: r, now: Timestamp(r.IntN(1000))}
 	var buf []Entry[int]
 
@@ -569,27 +902,27 @@ func runSeqModel(t *testing.T, r *rand.Rand, mode TimeIndexMode, run int, seen m
 	steps := 50 + r.IntN(250)
 	for step := range steps {
 		switch op := r.IntN(100); {
-		case op < 45:
+		case op < 40:
 			v, in := g.nextValue(), g.meta()
 			got, gotErr := s.Append(v, in)
 			want, wantErr := m.append(v, in)
 			if !sameErr(gotErr, wantErr) || got != want {
 				fail(step, "Append", "got (%+v, %v), want (%+v, %v) for %+v", got, gotErr, want, wantErr, in)
 			}
-		case op < 55:
+		case op < 48:
 			ref := randomRef(r, m)
 			got, gotSt := s.Get(ref)
 			want, wantSt := m.get(ref)
 			if got != want || gotSt != wantSt {
 				fail(step, "Get", "ref %+v: got (%+v, %v), want (%+v, %v)", ref, got, gotSt, want, wantSt)
 			}
-		case op < 58:
+		case op < 51:
 			got, gotSt := s.Latest()
 			want, wantSt := m.latest()
 			if got != want || gotSt != wantSt {
 				fail(step, "Latest", "got (%+v, %v), want (%+v, %v)", got, gotSt, want, wantSt)
 			}
-		case op < 68:
+		case op < 59:
 			from, limit := randomRef(r, m), r.IntN(8)-1
 			prefix := r.IntN(3)
 			buf = buf[:0]
@@ -613,7 +946,7 @@ func runSeqModel(t *testing.T, r *rand.Rand, mode TimeIndexMode, run int, seen m
 				fail(step, "ReadFrom", "entries %+v, want %+v", got[prefix:], want)
 			}
 			buf = got
-		case op < 86:
+		case op < 74:
 			q, ts := pointQuery(r.IntN(int(numPointQueries))), randomQueryTime(r, m, g)
 			got, gotSt := q.run(s, ts)
 			want, wantSt := m.point(q, ts)
@@ -625,6 +958,11 @@ func runSeqModel(t *testing.T, r *rand.Rand, mode TimeIndexMode, run int, seen m
 				fail(step, q.String(), "looked ahead: EventTime %d > ts %d", got.Meta.EventTime, ts) // §16.3
 			}
 		case op < 89:
+			name, next := runBatchOp(t, r, s, m, g, &cursors, batchSeen)
+			if name != "" {
+				fail(step, name, "%s", next)
+			}
+		case op < 92:
 			if gotErr, wantErr := s.Clear(), m.clear(); !sameErr(gotErr, wantErr) {
 				fail(step, "Clear", "got %v, want %v", gotErr, wantErr)
 			}

@@ -10,7 +10,8 @@ Plan: `IMPLEMENTATION_PLAN.md`. Spec: `temporal_series_requirements.md`. Decisio
 | 2 Series core (Seq path) | done |
 | 3 Event-time ordering capability | done |
 | 4 Event-time point queries, status precedence, watermark gating | done |
-| 5 Batch time reads, TimeCursor pagination, Entries | next |
+| 5 Batch time reads, TimeCursor pagination, Entries | done |
+| 6 Key indexes (single-record Append) | next |
 
 ## Session 1 — Foundations and ring
 
@@ -119,3 +120,29 @@ Tests per requirement:
 Open questions: none.
 
 Known gaps: none for S4 scope.
+
+## Session 5 — Batch time reads, TimeCursor pagination, Entries
+
+Done:
+- `query_batch.go`: `Range`, `RangeValues`, `AtAll`, `Continue`, `ContinueValues`, `PrevN`, `NextN`, `Entries`; two-step reads through `keyScratch`; `ascendPlan` shared by Range/AtAll/Continue; cursor validation per §8.4/P-14 (Disabled → Invalid → Reset → NotReady); `ReadInfo.Evicted` per P-05; NextN gating per P-13/S4-01/S5-04.
+- Model: `rangeQ`, `atAll`, `continueQ`, `prevN`, `nextN` (linear scans over `byTime`), expected cursors via `makeCursor`; random runs keep a cursor pool (stale after Clear, foreign, future-generation, zero) and assert that OK, NotFound, Expired, NotReady, Invalid, Reset, truncation and successful continuation all occur.
+
+Tests per requirement:
+- Q-005, Q-013, Q-014, T-024: `TestRange_PaginationConcatenates` (every limit 1..9, entries and values)
+- T-024, §8.4: `TestContinue_ConcurrentChanges` (late insert behind/ahead/tie, eviction between pages, everything evicted → Expired)
+- E-016, T-016, T-024: `TestContinue_CursorValidation` (zero, foreign, future gen → Invalid; old gen → Reset; Invalid before Reset; Reset before NotReady; None → Disabled even with a foreign cursor)
+- §19, P-10: `TestRange_WatermarkGate` (to-1 == wm, wm+1, `to == MinTimestamp`, wm == MaxTimestamp)
+- E-002, §8.1: `TestBatch_EdgeRules`
+- Q-002, Q-014: `TestAtAll_DuplicatesAndContinue`
+- Q-006, §16.3: `TestPrevNNextN_Partition` (randomized: PrevN ++ NextN == Range; PrevN last == AsOf; no look-ahead), `TestPrevNNextN_Limits`
+- P-13, S4-01, S5-04: `TestNextN_WatermarkGate`
+- Q-011, Q-013, §8.2: `TestBatch_LimitAndDst`
+- T-023, E-015, Q-016: `TestBatch_NoneNoStateChange` (all batch methods and Entries)
+- Q-015, §8.3, C-008, P-15: `TestEntries` (paged result, early break, status up front, calling Append/AsOf inside the loop under a timeout, Clear ends the scan)
+- T-015: `TestBatch_ClonePanicReleasesLock`
+- T-026 (part): `TestAllocs_BatchReads` (Range, RangeValues, AtAll, Continue, ContinueValues, PrevN, NextN: 0 allocs)
+- T-002: `TestModel_SeqPath` covers all batch reads in both modes. Mutation checks: Continue resuming at `last.seq` instead of `last.seq+1`, an off-by-one envelope intersection, and dropping the NextN "pending" rule each fail it.
+
+Open questions: none.
+
+Known gaps: none for S5 scope.
