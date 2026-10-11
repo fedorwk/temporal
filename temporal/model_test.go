@@ -1,11 +1,13 @@
 package temporal
 
 import (
+	"cmp"
 	"errors"
 	"fmt"
 	"math"
 	"math/rand/v2"
 	"reflect"
+	"slices"
 	"testing"
 	"time"
 )
@@ -21,6 +23,7 @@ type model struct {
 	late      LatePolicy
 	tolerance int64
 	srcPolicy SourceSeqPolicy
+	gate      bool
 
 	gen     Gen
 	recs    []Entry[int] // retained, ascending Seq
@@ -53,6 +56,7 @@ func newModel(cfg Config[int]) *model {
 		late:      cfg.LatePolicy,
 		tolerance: int64(cfg.LateTolerance),
 		srcPolicy: cfg.SourceSeqPolicy,
+		gate:      cfg.GateReadsByWatermark,
 		gen:       1,
 		nextSeq:   1,
 		watermark: MinTimestamp,
@@ -232,6 +236,155 @@ func (m *model) readFrom(from Ref, limit int) ([]Entry[int], ReadInfo) {
 	return out, info
 }
 
+// byTime returns the retained entries sorted by (EventTime, Seq).
+func (m *model) byTime() []Entry[int] {
+	out := slices.Clone(m.recs)
+	slices.SortFunc(out, func(a, b Entry[int]) int {
+		if c := cmp.Compare(a.Meta.EventTime, b.Meta.EventTime); c != 0 {
+			return c
+		}
+		return cmp.Compare(a.Meta.Ref.Seq, b.Meta.Ref.Seq)
+	})
+	return out
+}
+
+// pointQuery names an event-time point read for the model and the Series.
+type pointQuery int
+
+const (
+	qAsOf pointQuery = iota
+	qBefore
+	qAfter
+	qAtOrAfter
+	qFirstAt
+	qLastAt
+	qLatestByEventTime
+	numPointQueries
+)
+
+func (q pointQuery) run(s *Series[int], ts Timestamp) (Entry[int], Status) {
+	switch q {
+	case qAsOf:
+		return s.AsOf(ts)
+	case qBefore:
+		return s.Before(ts)
+	case qAfter:
+		return s.After(ts)
+	case qAtOrAfter:
+		return s.AtOrAfter(ts)
+	case qFirstAt:
+		return s.FirstAt(ts)
+	case qLastAt:
+		return s.LastAt(ts)
+	default:
+		return s.LatestByEventTime()
+	}
+}
+
+func (q pointQuery) String() string {
+	return [...]string{"AsOf", "Before", "After", "AtOrAfter", "FirstAt", "LastAt", "LatestByEventTime"}[q]
+}
+
+// point follows §7.2, §7.5, §19 and P-13 by linear scan over byTime.
+func (m *model) point(q pointQuery, ts Timestamp) (Entry[int], Status) {
+	var none Entry[int]
+	if m.mode == TimeIndexNone {
+		return none, StatusTimeIndexDisabled
+	}
+	sorted := m.byTime()
+	et := func(e Entry[int]) Timestamp { return e.Meta.EventTime }
+	lastWhere := func(pred func(Entry[int]) bool) (Entry[int], bool) {
+		for i := len(sorted) - 1; i >= 0; i-- {
+			if pred(sorted[i]) {
+				return sorted[i], true
+			}
+		}
+		return none, false
+	}
+	firstWhere := func(pred func(Entry[int]) bool) (Entry[int], bool) {
+		for _, e := range sorted {
+			if pred(e) {
+				return e, true
+			}
+		}
+		return none, false
+	}
+	miss := func(expired bool) Status {
+		if expired {
+			return StatusExpired
+		}
+		return StatusNotFound
+	}
+	backward := func(pred func(Entry[int]) bool, last bool, expired bool) (Entry[int], Status) {
+		if m.gate && ts > m.watermark {
+			return none, StatusNotReady
+		}
+		var e Entry[int]
+		var ok bool
+		if last {
+			e, ok = lastWhere(pred)
+		} else {
+			e, ok = firstWhere(pred)
+		}
+		if ok {
+			return e, StatusOK
+		}
+		return none, miss(expired)
+	}
+	forward := func(pred func(Entry[int]) bool, expired bool) (Entry[int], Status) {
+		e, ok := firstWhere(pred)
+		switch {
+		case ok && (!m.gate || et(e) <= m.watermark):
+			return e, StatusOK
+		case ok:
+			return none, StatusNotReady
+		case expired:
+			return none, StatusExpired
+		case m.gate && m.watermark != MaxTimestamp:
+			return none, StatusNotReady
+		default:
+			return none, StatusNotFound
+		}
+	}
+	ev := m.evicted
+	switch q {
+	case qAsOf:
+		return backward(func(e Entry[int]) bool { return et(e) <= ts }, true, ev && m.minEvict <= ts)
+	case qBefore:
+		return backward(func(e Entry[int]) bool { return et(e) < ts }, true, ev && m.minEvict < ts)
+	case qAfter:
+		return forward(func(e Entry[int]) bool { return et(e) > ts }, ev && m.maxEvi > ts)
+	case qAtOrAfter:
+		return forward(func(e Entry[int]) bool { return et(e) >= ts }, ev && m.maxEvi >= ts)
+	case qFirstAt:
+		return backward(func(e Entry[int]) bool { return et(e) == ts }, false, ev && m.minEvict <= ts && ts <= m.maxEvi)
+	case qLastAt:
+		return backward(func(e Entry[int]) bool { return et(e) == ts }, true, ev && m.minEvict <= ts && ts <= m.maxEvi)
+	default:
+		if len(sorted) == 0 {
+			return none, StatusNotFound
+		}
+		return sorted[len(sorted)-1], StatusOK
+	}
+}
+
+// randomQueryTime picks query timestamps near the data: retained EventTimes
+// (for exact matches), neighbours, the recent range and the sentinels.
+func randomQueryTime(r *rand.Rand, m *model, g *inputGen) Timestamp {
+	switch n := r.IntN(10); {
+	case n == 0:
+		return MinTimestamp
+	case n == 1:
+		return MaxTimestamp
+	case n < 6 && len(m.recs) > 0:
+		return m.recs[r.IntN(len(m.recs))].Meta.EventTime + Timestamp(r.IntN(3)-1)
+	case m.evicted && n < 8:
+		return []Timestamp{m.minEvict - 1, m.minEvict, m.maxEvi, m.maxEvi + 1}[r.IntN(4)]
+	default:
+		return g.now + Timestamp(r.IntN(70)-60)
+	}
+}
+
 func (m *model) clear() error {
 	if m.closed {
 		return ErrClosed
@@ -348,13 +501,14 @@ func (g *inputGen) nextValue() int {
 func randomConfig(r *rand.Rand, mode TimeIndexMode) Config[int] {
 	tolerances := []int64{0, 0, 3, 40, math.MaxInt64}
 	return Config[int]{
-		Name:            fmt.Sprintf("model-%d", r.IntN(1000)),
-		Capacity:        1 + r.IntN(8),
-		TimeIndex:       mode,
-		MaxReadBatch:    r.IntN(6),
-		LatePolicy:      LatePolicy(r.IntN(2)),
-		LateTolerance:   time.Duration(tolerances[r.IntN(len(tolerances))]),
-		SourceSeqPolicy: SourceSeqPolicy(r.IntN(3)),
+		Name:                 fmt.Sprintf("model-%d", r.IntN(1000)),
+		Capacity:             1 + r.IntN(8),
+		TimeIndex:            mode,
+		MaxReadBatch:         r.IntN(6),
+		LatePolicy:           LatePolicy(r.IntN(2)),
+		LateTolerance:        time.Duration(tolerances[r.IntN(len(tolerances))]),
+		SourceSeqPolicy:      SourceSeqPolicy(r.IntN(3)),
+		GateReadsByWatermark: r.IntN(2) == 0,
 	}
 }
 
@@ -381,14 +535,25 @@ func TestModel_SeqPath(t *testing.T) {
 	for _, mode := range allModes {
 		t.Run(fmt.Sprintf("mode=%d", mode), func(t *testing.T) {
 			r, _ := newRand(t)
+			seen := map[Status]int{}
 			for run := range iters(200) {
-				runSeqModel(t, r, mode, run)
+				runSeqModel(t, r, mode, run, seen)
+			}
+			// Guard against a vacuous run: every point-query status must occur.
+			want := []Status{StatusOK, StatusNotFound, StatusExpired, StatusNotReady}
+			if mode == TimeIndexNone {
+				want = []Status{StatusTimeIndexDisabled}
+			}
+			for _, st := range want {
+				if seen[st] == 0 && iters(200) >= 50 {
+					t.Errorf("point queries never returned %v (seen %v)", st, seen)
+				}
 			}
 		})
 	}
 }
 
-func runSeqModel(t *testing.T, r *rand.Rand, mode TimeIndexMode, run int) {
+func runSeqModel(t *testing.T, r *rand.Rand, mode TimeIndexMode, run int, seen map[Status]int) {
 	t.Helper()
 	cfg := randomConfig(r, mode)
 	s := mustNew(t, cfg)
@@ -404,27 +569,27 @@ func runSeqModel(t *testing.T, r *rand.Rand, mode TimeIndexMode, run int) {
 	steps := 50 + r.IntN(250)
 	for step := range steps {
 		switch op := r.IntN(100); {
-		case op < 55:
+		case op < 45:
 			v, in := g.nextValue(), g.meta()
 			got, gotErr := s.Append(v, in)
 			want, wantErr := m.append(v, in)
 			if !sameErr(gotErr, wantErr) || got != want {
 				fail(step, "Append", "got (%+v, %v), want (%+v, %v) for %+v", got, gotErr, want, wantErr, in)
 			}
-		case op < 70:
+		case op < 55:
 			ref := randomRef(r, m)
 			got, gotSt := s.Get(ref)
 			want, wantSt := m.get(ref)
 			if got != want || gotSt != wantSt {
 				fail(step, "Get", "ref %+v: got (%+v, %v), want (%+v, %v)", ref, got, gotSt, want, wantSt)
 			}
-		case op < 75:
+		case op < 58:
 			got, gotSt := s.Latest()
 			want, wantSt := m.latest()
 			if got != want || gotSt != wantSt {
 				fail(step, "Latest", "got (%+v, %v), want (%+v, %v)", got, gotSt, want, wantSt)
 			}
-		case op < 88:
+		case op < 68:
 			from, limit := randomRef(r, m), r.IntN(8)-1
 			prefix := r.IntN(3)
 			buf = buf[:0]
@@ -448,12 +613,29 @@ func runSeqModel(t *testing.T, r *rand.Rand, mode TimeIndexMode, run int) {
 				fail(step, "ReadFrom", "entries %+v, want %+v", got[prefix:], want)
 			}
 			buf = got
-		case op < 91:
+		case op < 86:
+			q, ts := pointQuery(r.IntN(int(numPointQueries))), randomQueryTime(r, m, g)
+			got, gotSt := q.run(s, ts)
+			want, wantSt := m.point(q, ts)
+			seen[gotSt]++
+			if got != want || gotSt != wantSt {
+				fail(step, q.String(), "ts %d: got (%+v, %v), want (%+v, %v)", ts, got, gotSt, want, wantSt)
+			}
+			if gotSt == StatusOK && (q == qAsOf || q == qLastAt) && got.Meta.EventTime > ts {
+				fail(step, q.String(), "looked ahead: EventTime %d > ts %d", got.Meta.EventTime, ts) // §16.3
+			}
+		case op < 89:
 			if gotErr, wantErr := s.Clear(), m.clear(); !sameErr(gotErr, wantErr) {
 				fail(step, "Clear", "got %v, want %v", gotErr, wantErr)
 			}
 		case op < 98:
-			ts := m.watermark + Timestamp(r.IntN(7)-2)
+			ts := g.now + Timestamp(r.IntN(30)-25)
+			switch r.IntN(20) {
+			case 0:
+				ts = MaxTimestamp
+			case 1:
+				ts = m.watermark
+			}
 			if got, want := s.SetWatermark(ts), m.setWatermark(ts); got != want {
 				fail(step, "SetWatermark", "ts %d: got %v, want %v", ts, got, want)
 			}

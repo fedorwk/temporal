@@ -9,7 +9,8 @@ Plan: `IMPLEMENTATION_PLAN.md`. Spec: `temporal_series_requirements.md`. Decisio
 | 1 Foundations and ring | done |
 | 2 Series core (Seq path) | done |
 | 3 Event-time ordering capability | done |
-| 4 Event-time point queries, status precedence, watermark gating | next |
+| 4 Event-time point queries, status precedence, watermark gating | done |
+| 5 Batch time reads, TimeCursor pagination, Entries | next |
 
 ## Session 1 — Foundations and ring
 
@@ -96,3 +97,25 @@ Tests per requirement:
 Open questions: none.
 
 Known gaps: none for S3 scope.
+
+## Session 4 — Event-time point queries, status precedence, watermark gating
+
+Done:
+- `query_time.go`: `AsOf`, `Before`, `After`, `AtOrAfter`, `FirstAt`, `LastAt`, `LatestByEventTime`; envelope helpers `expiredLE/LT/GT/GE/EQ`; precedence Disabled → NotReady → data; forward results per P-13 and S4-01.
+- `watermark.go`: `gatedAt` (backward point/batch bound), `gatedBelow` (exclusive bound, overflow-safe, for S5), `finalAt` and `complete` (forward reads).
+- Model: `byTime` view, `point()` for every point query by linear scan; random configs toggle `GateReadsByWatermark`; watermarks follow the data (incl. MaxTimestamp); the run asserts every status (OK, NotFound, Expired, NotReady; Disabled in None mode) actually occurs.
+
+Tests per requirement:
+- T-017, §7.2, E-003, Q-003/Q-004: `TestPointQueries_StatusMatrix` (empty; evicted below retained; evicted above retained; irrelevant evictions; Expired at MinEvicted−1/MinEvicted/MaxEvicted/MaxEvicted+1)
+- §7.5, E-015: `TestPointQueries_Precedence` (Disabled beats NotReady on empty and non-empty series; NotReady beats Expired and OK)
+- P-13, S4-01: `TestPointQueries_ForwardGate` (EventTime == wm, wm+1, wm == MaxTimestamp; late record behind the watermark; Expired wins with no match)
+- T-004, E-004: `TestPointQueries_DuplicatesAndLate`
+- T-023, Q-016: `TestPointQueries_NoneNoStateChange` (gate on/off, empty/non-empty, Stats and invariants unchanged)
+- T-015: `TestPointQueries_ClonePanicReleasesLock`
+- T-026 (part): `TestAllocs_PointQueries` (0 allocs for every point read, including a gated one)
+- §16.3 no look-ahead, T-002: `TestModel_SeqPath` (checks AsOf/LastAt never return EventTime > ts; compares every point query with the model in both modes)
+- Mutation checks: `expiredGT` boundary, `finalAt` boundary and the MaxTimestamp completeness rule each fail the targeted tests and the model test.
+
+Open questions: none.
+
+Known gaps: none for S4 scope.
