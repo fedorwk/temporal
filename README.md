@@ -222,6 +222,7 @@ it).
 | `Subscribe(SubscribeOptions) (*Subscription[T], error)` | `Start`: `StartNext()` (default), `StartOldest()`, `StartAt(ref)`. `OnLag`: `LagFail` or `LagSkip`. `WatermarkUpdates`: also wake and return on watermark advances. |
 | `Next(ctx, dst, limit)` | Block until records are available. |
 | `NextState(ctx, dst, limit)` | `Next` plus a `SourceState` read under the same lock. |
+| `All(ctx, limit)` | `iter.Seq2[Entry[T], error]` over `Next`; ends silently after a clean close, yields the error otherwise. |
 | `TryNext(dst, limit)`, `Wake()` | Non-blocking variant and a coalesced wake channel for `select` loops. |
 | `Seek(StartFrom)`, `Cursor()`, `Skipped()`, `Close()` | Reposition, inspect, release. |
 

@@ -3,6 +3,7 @@ package temporal
 import (
 	"context"
 	"fmt"
+	"iter"
 	"slices"
 	"sync"
 )
@@ -282,6 +283,39 @@ func (sub *Subscription[T]) NextState(ctx context.Context, dst []Entry[T], limit
 			return dst, SourceState{}, ctx.Err()
 		case <-sub.sub.done:
 			return dst, SourceState{}, ErrClosed
+		}
+	}
+}
+
+// All returns an iterator over the subscription's records in Seq order. It
+// reads batches of up to min(limit, MaxReadBatch) records with Next, yielding
+// (entry, nil) for each, and stops when reading stops: after a clean close of
+// a drained Series it simply ends, otherwise it yields (zero Entry, err) once
+// with the error Next returned (ctx.Err(), a *ClosedError, ErrReset, a
+// *LagError, ...). Breaking out of the loop stops reading and leaves the
+// subscription open, positioned right after the last record yielded. The iterator reuses one batch buffer and, like the
+// subscription, must be used by one goroutine at a time.
+func (sub *Subscription[T]) All(ctx context.Context, limit int) iter.Seq2[Entry[T], error] {
+	return func(yield func(Entry[T], error) bool) {
+		buf := make([]Entry[T], 0, sub.s.effectiveLimit(limit))
+		for {
+			var err error
+			buf, err = sub.Next(ctx, buf[:0], limit)
+			if err != nil {
+				if err != ErrClosed {
+					yield(Entry[T]{}, err)
+				}
+				return
+			}
+			for i, e := range buf {
+				if !yield(e, nil) {
+					if i+1 < len(buf) {
+						// Rewind past what was read but not yielded.
+						_ = sub.Seek(StartAt(buf[i+1].Meta.Ref))
+					}
+					return
+				}
+			}
 		}
 	}
 }
