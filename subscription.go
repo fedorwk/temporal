@@ -3,6 +3,7 @@ package temporal
 import (
 	"context"
 	"fmt"
+	"iter"
 	"slices"
 	"sync"
 )
@@ -38,12 +39,19 @@ type SubscribeOptions struct {
 	Name  string
 	Start StartFrom // zero value = StartNext
 	OnLag LagPolicy
+	// WatermarkUpdates makes the subscription follow the watermark too:
+	// SetWatermark wakes it, and NextState (and Next, TryNext) also return,
+	// with no records, when the watermark has advanced past the last state
+	// returned and no record is pending. Derive loops use it to forward
+	// completeness that arrives after the last record.
+	WatermarkUpdates bool
 }
 
 // subscriber is the notification endpoint shared with the Series.
 type subscriber struct {
 	wake      chan struct{} // buffer 1: coalesced wake-ups
 	done      chan struct{} // closed by Subscription.Close
+	wmUpdates bool          // woken by SetWatermark; immutable
 	closeOnce sync.Once
 }
 
@@ -56,6 +64,7 @@ type Subscription[T any] struct {
 	onLag   LagPolicy
 	cur     Cursor
 	skipped uint64
+	lastWM  Timestamp // watermark of the last returned state (WatermarkUpdates)
 }
 
 // SourceState is the state of the subscribed Series captured in the same lock
@@ -74,10 +83,15 @@ func (s *Series[T]) Subscribe(opts SubscribeOptions) (*Subscription[T], error) {
 		return nil, fmt.Errorf("%w: invalid SubscribeOptions", ErrInvalidInput)
 	}
 	sub := &Subscription[T]{
-		s:     s,
-		sub:   &subscriber{wake: make(chan struct{}, 1), done: make(chan struct{})},
-		name:  opts.Name,
-		onLag: opts.OnLag,
+		s: s,
+		sub: &subscriber{
+			wake:      make(chan struct{}, 1),
+			done:      make(chan struct{}),
+			wmUpdates: opts.WatermarkUpdates,
+		},
+		name:   opts.Name,
+		onLag:  opts.OnLag,
+		lastWM: MinTimestamp,
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -126,6 +140,24 @@ func (s *Series[T]) notify() {
 		return
 	}
 	for _, sub := range *p {
+		select {
+		case sub.wake <- struct{}{}:
+		default:
+		}
+	}
+}
+
+// notifyWatermark wakes the subscribers that follow the watermark. Like
+// notify it is called after the mutex is released and never blocks.
+func (s *Series[T]) notifyWatermark() {
+	p := s.subs.Load()
+	if p == nil {
+		return
+	}
+	for _, sub := range *p {
+		if !sub.wmUpdates {
+			continue
+		}
 		select {
 		case sub.wake <- struct{}{}:
 		default:
@@ -198,9 +230,14 @@ func (sub *Subscription[T]) poll(dst []Entry[T], limit int) ([]Entry[T], SourceS
 		}
 		sub.cur.Next = next + Seq(n)
 		sub.skipped += skip
+		sub.lastWM = snap.Watermark
 		return dst, snap, true, nil
 	}
 	sub.cur.Next = next
+	if sub.sub.wmUpdates && snap.Watermark > sub.lastWM {
+		sub.lastWM = snap.Watermark
+		return dst, snap, true, nil
+	}
 	if s.closed {
 		return dst, snap, false, s.closeErr
 	}
@@ -223,8 +260,11 @@ func (sub *Subscription[T]) Next(ctx context.Context, dst []Entry[T], limit int)
 // under the same lock as the records (zero on error). It is the building block
 // for derived series: after processing a batch whose last record is
 // state.Newest, every record up to state.Watermark has been seen, so the
-// watermark may be forwarded to a destination series. See
-// ExampleSubscription_NextState for a complete derive loop.
+// watermark may be forwarded to a destination series. A producer usually
+// advances the watermark after appending, so subscribe with WatermarkUpdates:
+// NextState then also returns with no records when only the watermark moved,
+// and the loop can forward it at once. See ExampleSubscription_NextState for a
+// complete derive loop.
 func (sub *Subscription[T]) NextState(ctx context.Context, dst []Entry[T], limit int) ([]Entry[T], SourceState, error) {
 	for {
 		if err := ctx.Err(); err != nil {
@@ -247,10 +287,58 @@ func (sub *Subscription[T]) NextState(ctx context.Context, dst []Entry[T], limit
 	}
 }
 
+// All returns an iterator over the subscription's records in Seq order. It
+// reads batches of up to min(limit, MaxReadBatch) records with Next, yielding
+// (entry, nil) for each, and stops when reading stops: after a clean close of
+// a drained Series it simply ends, otherwise it yields (zero Entry, err) once
+// with the error Next returned (ctx.Err(), a *ClosedError, ErrReset, a
+// *LagError, ...). Breaking out of the loop stops reading and leaves the
+// subscription open, positioned right after the last record yielded. The iterator reuses one batch buffer and, like the
+// subscription, must be used by one goroutine at a time.
+func (sub *Subscription[T]) All(ctx context.Context, limit int) iter.Seq2[Entry[T], error] {
+	return func(yield func(Entry[T], error) bool) {
+		buf := make([]Entry[T], 0, sub.s.effectiveLimit(limit))
+		for {
+			var err error
+			buf, err = sub.Next(ctx, buf[:0], limit)
+			if err != nil {
+				if err != ErrClosed {
+					yield(Entry[T]{}, err)
+				}
+				return
+			}
+			for i, e := range buf {
+				if !yield(e, nil) {
+					if i+1 < len(buf) {
+						// Rewind past what was read but not yielded.
+						_ = sub.Seek(StartAt(buf[i+1].Meta.Ref))
+					}
+					return
+				}
+			}
+		}
+	}
+}
+
 // TryNext is Next without blocking: it may return zero entries and a nil error.
 func (sub *Subscription[T]) TryNext(dst []Entry[T], limit int) ([]Entry[T], error) {
 	out, _, _, err := sub.poll(dst, limit)
 	return out, err
+}
+
+// TryNextState is NextState without blocking: it may return zero entries and a
+// nil error. The state is captured under the same lock as the entries, so
+// after a call that returns nothing new, every record up to state.Watermark
+// has been read. Loops that wait on several subscriptions use it with Wake.
+// With WatermarkUpdates, a watermark advance is reported before a close, and
+// one wake-up may stand for both: after a wake-up, call until a call returns
+// neither records nor a changed watermark (or an error).
+func (sub *Subscription[T]) TryNextState(dst []Entry[T], limit int) ([]Entry[T], SourceState, error) {
+	out, state, _, err := sub.poll(dst, limit)
+	if err != nil {
+		return out, SourceState{}, err
+	}
+	return out, state, nil
 }
 
 // Seek moves the cursor to a start position in the current generation. It is
@@ -266,6 +354,7 @@ func (sub *Subscription[T]) Seek(from StartFrom) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	sub.cur = s.startCursor(from)
+	sub.lastWM = MinTimestamp
 	return nil
 }
 

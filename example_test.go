@@ -155,7 +155,8 @@ func ExampleSubscription_Next() {
 // deriveNotional is a complete derive loop: it maps each trade to its notional
 // value, appends each batch's outputs atomically, advances a checkpoint only
 // after the append succeeded, and forwards the source watermark once it has
-// caught up. It runs on the caller's goroutine, so shutdown, retries and panics
+// caught up, including a watermark set after the last record
+// (WatermarkUpdates). It runs on the caller's goroutine, so shutdown, retries and panics
 // follow the caller's rules.
 func deriveNotional(
 	ctx context.Context,
@@ -164,7 +165,7 @@ func deriveNotional(
 	from temporal.StartFrom,
 	checkpoint *temporal.Cursor,
 ) error {
-	sub, err := src.Subscribe(temporal.SubscribeOptions{Start: from})
+	sub, err := src.Subscribe(temporal.SubscribeOptions{Start: from, WatermarkUpdates: true})
 	if err != nil {
 		return err
 	}
@@ -187,12 +188,14 @@ func deriveNotional(
 				Meta:  temporal.InputMeta{EventTime: e.Meta.EventTime, SourceSeq: uint64(e.Meta.Ref.Seq)},
 			})
 		}
-		if results, err = dst.AppendBatch(results[:0], out); err != nil {
-			return err // the checkpoint still points at this batch
+		if len(in) > 0 {
+			if results, err = dst.AppendBatch(results[:0], out); err != nil {
+				return err // the checkpoint still points at this batch
+			}
+			last := in[len(in)-1].Meta.Ref
+			*checkpoint = temporal.Cursor{Gen: last.Gen, Next: last.Seq + 1} // persist externally if needed
 		}
-		last := in[len(in)-1].Meta.Ref
-		*checkpoint = temporal.Cursor{Gen: last.Gen, Next: last.Seq + 1} // persist externally if needed
-		if last.Seq == state.Newest.Seq {
+		if checkpoint.Next == state.Newest.Seq+1 {
 			// Caught up: every source record up to the watermark is processed.
 			dst.SetWatermark(state.Watermark)
 		}

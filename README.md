@@ -171,6 +171,7 @@ documentation on pkg.go.dev.
 | `AppendBatch(dst, []Input[T]) ([]AppendResult, error)` | Atomic: all or none; one subscriber wake-up. Behaves exactly like the same `Append`s in order. |
 | `AppendAll(dst, []Input[T])` | Any number of items, in `AppendBatch` chunks of `min(Capacity, MaxReadBatch)`. Atomic per chunk, not overall. |
 | `SetWatermark(ts) bool` | Monotonic completeness marker. |
+| `WaitWatermark(ctx, ts)` | Block until the series is complete through `ts` (or closed, or ctx done). |
 | `Clear() error` | Drop everything, start a new generation. |
 | `Close() error` | Stop writes; reads keep working. |
 | `CloseWithError(cause) error`, `Err()` | Close and record why; writers and drained subscribers get a `*ClosedError` matching `ErrClosed` and `cause`. |
@@ -218,10 +219,11 @@ it).
 
 | | |
 |---|---|
-| `Subscribe(SubscribeOptions) (*Subscription[T], error)` | `Start`: `StartNext()` (default), `StartOldest()`, `StartAt(ref)`. `OnLag`: `LagFail` or `LagSkip`. |
+| `Subscribe(SubscribeOptions) (*Subscription[T], error)` | `Start`: `StartNext()` (default), `StartOldest()`, `StartAt(ref)`. `OnLag`: `LagFail` or `LagSkip`. `WatermarkUpdates`: also wake and return on watermark advances. |
 | `Next(ctx, dst, limit)` | Block until records are available. |
 | `NextState(ctx, dst, limit)` | `Next` plus a `SourceState` read under the same lock. |
-| `TryNext(dst, limit)`, `Wake()` | Non-blocking variant and a coalesced wake channel for `select` loops. |
+| `All(ctx, limit)` | `iter.Seq2[Entry[T], error]` over `Next`; ends silently after a clean close, yields the error otherwise. |
+| `TryNext(dst, limit)`, `TryNextState(dst, limit)`, `Wake()` | Non-blocking variants and a coalesced wake channel for `select` loops over several subscriptions. |
 | `Seek(StartFrom)`, `Cursor()`, `Skipped()`, `Close()` | Reposition, inspect, release. |
 
 A subscription must be used by one goroutine at a time.
@@ -406,17 +408,30 @@ _, st = s.AsOf(100) // OK, and final
 With gating on, backward reads beyond the watermark return `StatusNotReady`,
 and forward reads (`After`, `AtOrAfter`, `NextN`) return only records at or
 below it. A watermark of `MaxTimestamp` declares the series complete (useful
-for historical replay). Watermark changes do not wake subscribers.
+for historical replay). Watermark changes do not wake subscribers; to wait for
+completeness, use `WaitWatermark`:
+
+```go
+// Read the final value at t from a series another goroutine is still filling.
+if _, err := s.WaitWatermark(ctx, t); err != nil {
+	return err // ctx done, or the series closed before reaching t
+}
+e, st := s.AsOf(t)
+```
 
 ### Derived series (bars, indicators)
 
 Derived series are a loop you own. `NextState` returns the new records
 together with the source's newest record and watermark, captured in one
-atomic read, so you know exactly when you have caught up:
+atomic read, so you know exactly when you have caught up. With
+`WatermarkUpdates` it also returns, with no records, when only the watermark
+moved:
 
 ```go
 func deriveNotional(ctx context.Context, src *temporal.Series[Trade], dst *temporal.Series[int64]) error {
-	sub, err := src.Subscribe(temporal.SubscribeOptions{Start: temporal.StartOldest()})
+	// WatermarkUpdates: also return when only the watermark moved, so
+	// completeness declared after the last record is forwarded at once.
+	sub, err := src.Subscribe(temporal.SubscribeOptions{Start: temporal.StartOldest(), WatermarkUpdates: true})
 	if err != nil {
 		return err
 	}
@@ -425,6 +440,7 @@ func deriveNotional(ctx context.Context, src *temporal.Series[Trade], dst *tempo
 	in := make([]temporal.Entry[Trade], 0, 256)
 	out := make([]temporal.Input[int64], 0, 256)
 	var res []temporal.AppendResult
+	var last temporal.Ref
 	for {
 		var st temporal.SourceState
 		in, st, err = sub.NextState(ctx, in[:0], 256)
@@ -438,10 +454,13 @@ func deriveNotional(ctx context.Context, src *temporal.Series[Trade], dst *tempo
 				Meta:  temporal.InputMeta{EventTime: e.Meta.EventTime},
 			})
 		}
-		if res, err = dst.AppendBatch(res[:0], out); err != nil {
-			return err // nothing was applied; retry from the same position
+		if len(in) > 0 {
+			if res, err = dst.AppendBatch(res[:0], out); err != nil {
+				return err // nothing was applied; retry from the same position
+			}
+			last = in[len(in)-1].Meta.Ref
 		}
-		if in[len(in)-1].Meta.Ref.Seq == st.Newest.Seq {
+		if last == st.Newest {
 			dst.SetWatermark(st.Watermark) // caught up: forward completeness
 		}
 	}
