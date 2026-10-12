@@ -76,3 +76,24 @@ func TestSubscriptionAll_Break(t *testing.T) {
 		t.Fatalf("after break: %v %v", values(got), err)
 	}
 }
+
+// TryNextState returns what is pending with the state captured alongside,
+// and never blocks.
+func TestSubscription_TryNextState(t *testing.T) {
+	s := mustNew(t, Config[int]{Capacity: 8})
+	sub := mustSubscribe(t, s, SubscribeOptions{Start: StartOldest()})
+	got, st, err := sub.TryNextState(nil, 0)
+	if err != nil || len(got) != 0 || st.Watermark != MinTimestamp {
+		t.Fatalf("empty: %v %+v %v", values(got), st, err)
+	}
+	mustAppend(t, s, 1, at(10))
+	s.SetWatermark(10)
+	got, st, err = sub.TryNextState(nil, 0)
+	if err != nil || !slices.Equal(values(got), []int{1}) || st.Watermark != 10 || st.Newest != (Ref{1, 1}) {
+		t.Fatalf("pending: %v %+v %v", values(got), st, err)
+	}
+	s.CloseWithError(errFeed)
+	if _, st, err := sub.TryNextState(nil, 0); !errors.Is(err, errFeed) || st != (SourceState{}) {
+		t.Fatalf("closed: %+v %v", st, err)
+	}
+}

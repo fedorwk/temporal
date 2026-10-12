@@ -326,6 +326,18 @@ func (sub *Subscription[T]) TryNext(dst []Entry[T], limit int) ([]Entry[T], erro
 	return out, err
 }
 
+// TryNextState is NextState without blocking: it may return zero entries and a
+// nil error. The state is captured under the same lock as the entries, so
+// after a call that returns nothing new, every record up to state.Watermark
+// has been read. Loops that wait on several subscriptions use it with Wake.
+func (sub *Subscription[T]) TryNextState(dst []Entry[T], limit int) ([]Entry[T], SourceState, error) {
+	out, state, _, err := sub.poll(dst, limit)
+	if err != nil {
+		return out, SourceState{}, err
+	}
+	return out, state, nil
+}
+
 // Seek moves the cursor to a start position in the current generation. It is
 // the way to resume after ErrReset or a lag error.
 func (sub *Subscription[T]) Seek(from StartFrom) error {

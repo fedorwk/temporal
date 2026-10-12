@@ -223,7 +223,7 @@ it).
 | `Next(ctx, dst, limit)` | Block until records are available. |
 | `NextState(ctx, dst, limit)` | `Next` plus a `SourceState` read under the same lock. |
 | `All(ctx, limit)` | `iter.Seq2[Entry[T], error]` over `Next`; ends silently after a clean close, yields the error otherwise. |
-| `TryNext(dst, limit)`, `Wake()` | Non-blocking variant and a coalesced wake channel for `select` loops. |
+| `TryNext(dst, limit)`, `TryNextState(dst, limit)`, `Wake()` | Non-blocking variants and a coalesced wake channel for `select` loops over several subscriptions. |
 | `Seek(StartFrom)`, `Cursor()`, `Skipped()`, `Close()` | Reposition, inspect, release. |
 
 A subscription must be used by one goroutine at a time.
