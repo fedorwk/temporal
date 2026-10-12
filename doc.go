@@ -101,7 +101,14 @@
 // Append and AppendBatch validate and prepare everything before mutating
 // anything, so every returned error leaves no data state change. AppendBatch is
 // atomic and behaves exactly like the same Appends in order, with one
-// notification. A batch larger than Capacity fails with ErrBatchTooLarge.
+// notification. A batch larger than Capacity fails with ErrBatchTooLarge;
+// AppendAll accepts any number of items by splitting them into AppendBatch
+// chunks, atomic per chunk only.
+//
+// Close stops writes. CloseWithError also records a cause (Err): writes and
+// subscriptions that have drained the Series then return a *ClosedError, which
+// matches both ErrClosed and the cause with errors.Is, so a producer failure
+// reaches every reader.
 //
 // The library does not recover panics. A panic in Clone or a key extractor
 // propagates out of Append or AppendBatch; because callbacks run before any

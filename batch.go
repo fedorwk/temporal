@@ -51,7 +51,7 @@ func (s *Series[T]) appendBatchWithCallbacks(dst []AppendResult, items []Input[T
 func (s *Series[T]) appendBatchLocked(dst []AppendResult, items []Input[T]) ([]AppendResult, bool, error) {
 	switch {
 	case s.closed:
-		return dst, false, ErrClosed
+		return dst, false, s.closeErr
 	case len(items) == 0:
 		return dst, false, nil // P-09
 	case len(items) > s.cfg.capacity:
@@ -183,4 +183,41 @@ func batchErr(pos int, err error) error {
 		return err
 	}
 	return fmt.Errorf("temporal: batch item %d: %w", pos, err)
+}
+
+// AppendAll appends items in order through AppendBatch calls of at most
+// min(Capacity, MaxReadBatch) items each, so it accepts any number of items and
+// bounds how long each call holds the lock. Each chunk is atomic and wakes
+// subscribers once; the call as a whole is not: when a chunk fails, the
+// earlier chunks stay applied and the failing chunk and everything after it
+// are not. It appends one AppendResult per applied item to dst, so
+// len(result)-len(dst) is the number of items applied. A *ConflictError
+// carries the item's position in items; other errors name the position of the
+// failing chunk's first item and match their sentinel via errors.Is.
+//
+// Items beyond Capacity evict records appended earlier in the same call, as
+// the equivalent Appends would.
+func (s *Series[T]) AppendAll(dst []AppendResult, items []Input[T]) ([]AppendResult, error) {
+	chunk := min(s.cfg.capacity, s.cfg.maxReadBatch)
+	for off := 0; off < len(items); off += chunk {
+		end := min(off+chunk, len(items))
+		var err error
+		if dst, err = s.AppendBatch(dst, items[off:end]); err != nil {
+			return dst, allErr(off, err)
+		}
+	}
+	return dst, nil
+}
+
+// allErr rebases a chunk-relative AppendBatch error onto the AppendAll input.
+func allErr(off int, err error) error {
+	if ce, ok := err.(*ConflictError); ok {
+		abs := *ce
+		abs.BatchPos += off
+		return &abs
+	}
+	if off == 0 {
+		return err
+	}
+	return fmt.Errorf("temporal: AppendAll chunk at item %d: %w", off, err)
 }

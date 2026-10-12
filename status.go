@@ -108,6 +108,21 @@ func (e *LagError) Error() string {
 // Is reports whether target is ErrLagged.
 func (e *LagError) Is(target error) bool { return target == ErrLagged }
 
+// ClosedError is returned instead of ErrClosed by a Series closed with
+// CloseWithError and a non-nil cause. It matches ErrClosed with errors.Is and
+// unwraps to Cause.
+type ClosedError struct {
+	Cause error
+}
+
+func (e *ClosedError) Error() string { return "temporal: series closed: " + e.Cause.Error() }
+
+// Is reports whether target is ErrClosed.
+func (e *ClosedError) Is(target error) bool { return target == ErrClosed }
+
+// Unwrap returns Cause.
+func (e *ClosedError) Unwrap() error { return e.Cause }
+
 // ConflictError reports a unique-key conflict under ConflictReject.
 type ConflictError struct {
 	Index    string

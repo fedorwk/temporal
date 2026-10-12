@@ -70,6 +70,8 @@ type Series[T any] struct {
 	srcSeq      sourceSeqTracker
 	watermark   Timestamp
 	closed      bool
+	closeErr    error // returned by operations on the closed Series: ErrClosed or *ClosedError
+	cause       error // the CloseWithError cause; nil for a clean close
 	n           counters
 
 	subs        atomic.Pointer[[]*subscriber] // copy-on-write; read without mu by notify
@@ -126,8 +128,9 @@ func (s *Series[T]) Append(v T, m InputMeta) (AppendResult, error) {
 	// the hot path as cheap as possible.
 	s.mu.Lock()
 	if s.closed {
+		err := s.closeErr
 		s.mu.Unlock()
-		return AppendResult{}, ErrClosed
+		return AppendResult{}, err
 	}
 	res, err := s.appendLocked(&v, &m)
 	s.mu.Unlock()
@@ -150,7 +153,7 @@ func (s *Series[T]) appendWithCallbacks(v *T, m *InputMeta) (res AppendResult, e
 		}
 	}()
 	if s.closed {
-		return AppendResult{}, ErrClosed
+		return AppendResult{}, s.closeErr
 	}
 	res, err = s.appendLocked(v, m)
 	appended = err == nil && res.Outcome == OutcomeAppended
@@ -380,8 +383,9 @@ func (t *sourceSeqTracker) observe(epoch SourceEpoch, seq uint64) {
 func (s *Series[T]) Clear() error {
 	s.mu.Lock()
 	if s.closed {
+		err := s.closeErr
 		s.mu.Unlock()
-		return ErrClosed
+		return err
 	}
 	if s.gen == math.MaxUint32 {
 		s.mu.Unlock()
@@ -408,13 +412,38 @@ func (s *Series[T]) Clear() error {
 }
 
 // Close stops all writes. Reads keep working on retained data. Close always
-// returns nil and may be called more than once.
-func (s *Series[T]) Close() error {
+// returns nil and may be called more than once. It is CloseWithError(nil).
+func (s *Series[T]) Close() error { return s.CloseWithError(nil) }
+
+// CloseWithError closes the Series like Close and records cause as the reason.
+// Writes on the closed Series, and subscriptions that have drained it, then
+// return a *ClosedError that matches both ErrClosed and cause with errors.Is. A
+// nil cause is a clean close: those operations return ErrClosed itself. Only
+// the first close takes effect; later calls change nothing. CloseWithError
+// always returns nil.
+func (s *Series[T]) CloseWithError(cause error) error {
 	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		return nil
+	}
 	s.closed = true
+	s.cause = cause
+	s.closeErr = ErrClosed
+	if cause != nil {
+		s.closeErr = &ClosedError{Cause: cause}
+	}
 	s.mu.Unlock()
 	s.notify()
 	return nil
+}
+
+// Err returns the cause the Series was closed with, or nil if it is open or
+// was closed cleanly.
+func (s *Series[T]) Err() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.cause
 }
 
 // Len returns the number of retained records.

@@ -202,7 +202,7 @@ func (sub *Subscription[T]) poll(dst []Entry[T], limit int) ([]Entry[T], SourceS
 	}
 	sub.cur.Next = next
 	if s.closed {
-		return dst, snap, false, ErrClosed
+		return dst, snap, false, s.closeErr
 	}
 	return dst, snap, false, nil
 }
@@ -211,8 +211,9 @@ func (sub *Subscription[T]) poll(dst []Entry[T], limit int) ([]Entry[T], SourceS
 // min(limit, MaxReadBatch) records to dst in ascending Seq order, advancing
 // the cursor. It returns early with ctx.Err() if ctx is done (checked first,
 // without moving the cursor), ErrClosed after Close or once a closed Series is
-// drained, ErrReset after Clear until Seek, and a *LagError (ErrLagged) if the
-// cursor fell behind retention under LagFail.
+// drained (a *ClosedError carrying the cause if the Series was closed with
+// CloseWithError), ErrReset after Clear until Seek, and a *LagError (ErrLagged)
+// if the cursor fell behind retention under LagFail.
 func (sub *Subscription[T]) Next(ctx context.Context, dst []Entry[T], limit int) ([]Entry[T], error) {
 	out, _, err := sub.NextState(ctx, dst, limit)
 	return out, err

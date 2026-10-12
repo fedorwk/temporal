@@ -169,9 +169,11 @@ documentation on pkg.go.dev.
 |---|---|
 | `Append(v, InputMeta) (AppendResult, error)` | Store one record. |
 | `AppendBatch(dst, []Input[T]) ([]AppendResult, error)` | Atomic: all or none; one subscriber wake-up. Behaves exactly like the same `Append`s in order. |
+| `AppendAll(dst, []Input[T])` | Any number of items, in `AppendBatch` chunks of `min(Capacity, MaxReadBatch)`. Atomic per chunk, not overall. |
 | `SetWatermark(ts) bool` | Monotonic completeness marker. |
 | `Clear() error` | Drop everything, start a new generation. |
 | `Close() error` | Stop writes; reads keep working. |
+| `CloseWithError(cause) error`, `Err()` | Close and record why; writers and drained subscribers get a `*ClosedError` matching `ErrClosed` and `cause`. |
 
 `AppendResult` carries the `Outcome` (`Appended` / `Dropped`), the assigned
 `Ref`, applied flags, the `Evicted` ref and, for key conflicts, the
@@ -239,8 +241,9 @@ All sentinels are prefixed `temporal:` and work with `errors.Is`:
 `ErrUniqueConflict`, `ErrBatchTooLarge`, `ErrSeqExhausted`,
 `ErrGenExhausted`, `ErrIndexBound`.
 
-Typed errors: `*LagError` (`Missed`, `Oldest`, `Cursor`) and
-`*ConflictError` (`Index`, `Key`, `Existing`, `BatchPos`); use `errors.As`.
+Typed errors: `*LagError` (`Missed`, `Oldest`, `Cursor`),
+`*ConflictError` (`Index`, `Key`, `Existing`, `BatchPos`) and `*ClosedError`
+(`Cause`, also matched by `errors.Is(err, cause)`); use `errors.As`.
 
 ## Usage examples
 
