@@ -330,6 +330,9 @@ func (sub *Subscription[T]) TryNext(dst []Entry[T], limit int) ([]Entry[T], erro
 // nil error. The state is captured under the same lock as the entries, so
 // after a call that returns nothing new, every record up to state.Watermark
 // has been read. Loops that wait on several subscriptions use it with Wake.
+// With WatermarkUpdates, a watermark advance is reported before a close, and
+// one wake-up may stand for both: after a wake-up, call until a call returns
+// neither records nor a changed watermark (or an error).
 func (sub *Subscription[T]) TryNextState(dst []Entry[T], limit int) ([]Entry[T], SourceState, error) {
 	out, state, _, err := sub.poll(dst, limit)
 	if err != nil {
