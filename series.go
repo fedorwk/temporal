@@ -70,8 +70,9 @@ type Series[T any] struct {
 	srcSeq      sourceSeqTracker
 	watermark   Timestamp
 	closed      bool
-	closeErr    error // returned by operations on the closed Series: ErrClosed or *ClosedError
-	cause       error // the CloseWithError cause; nil for a clean close
+	closeErr    error         // returned by operations on the closed Series: ErrClosed or *ClosedError
+	cause       error         // the CloseWithError cause; nil for a clean close
+	wmWait      chan struct{} // closed to wake WaitWatermark callers; nil when none wait
 	n           counters
 
 	subs        atomic.Pointer[[]*subscriber] // copy-on-write; read without mu by notify
@@ -433,7 +434,11 @@ func (s *Series[T]) CloseWithError(cause error) error {
 	if cause != nil {
 		s.closeErr = &ClosedError{Cause: cause}
 	}
+	wake := s.takeWatermarkWaiters()
 	s.mu.Unlock()
+	if wake != nil {
+		close(wake)
+	}
 	s.notify()
 	return nil
 }

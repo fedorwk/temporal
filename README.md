@@ -171,6 +171,7 @@ documentation on pkg.go.dev.
 | `AppendBatch(dst, []Input[T]) ([]AppendResult, error)` | Atomic: all or none; one subscriber wake-up. Behaves exactly like the same `Append`s in order. |
 | `AppendAll(dst, []Input[T])` | Any number of items, in `AppendBatch` chunks of `min(Capacity, MaxReadBatch)`. Atomic per chunk, not overall. |
 | `SetWatermark(ts) bool` | Monotonic completeness marker. |
+| `WaitWatermark(ctx, ts)` | Block until the series is complete through `ts` (or closed, or ctx done). |
 | `Clear() error` | Drop everything, start a new generation. |
 | `Close() error` | Stop writes; reads keep working. |
 | `CloseWithError(cause) error`, `Err()` | Close and record why; writers and drained subscribers get a `*ClosedError` matching `ErrClosed` and `cause`. |
@@ -406,7 +407,16 @@ _, st = s.AsOf(100) // OK, and final
 With gating on, backward reads beyond the watermark return `StatusNotReady`,
 and forward reads (`After`, `AtOrAfter`, `NextN`) return only records at or
 below it. A watermark of `MaxTimestamp` declares the series complete (useful
-for historical replay). Watermark changes do not wake subscribers.
+for historical replay). Watermark changes do not wake subscribers; to wait for
+completeness, use `WaitWatermark`:
+
+```go
+// Read the final value at t from a series another goroutine is still filling.
+if _, err := s.WaitWatermark(ctx, t); err != nil {
+	return err // ctx done, or the series closed before reaching t
+}
+e, st := s.AsOf(t)
+```
 
 ### Derived series (bars, indicators)
 

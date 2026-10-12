@@ -83,7 +83,8 @@
 // return StatusNotReady, and forward reads (After, AtOrAfter, NextN) return
 // only records at or below the watermark, which are final: no late record can
 // arrive in front of them. A watermark of MaxTimestamp declares the series
-// complete. Watermark changes do not wake subscribers.
+// complete. Watermark changes do not wake subscribers; WaitWatermark blocks
+// until the watermark reaches a given time, or the Series closes below it.
 //
 // # Key indexes
 //
