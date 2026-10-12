@@ -219,7 +219,7 @@ it).
 
 | | |
 |---|---|
-| `Subscribe(SubscribeOptions) (*Subscription[T], error)` | `Start`: `StartNext()` (default), `StartOldest()`, `StartAt(ref)`. `OnLag`: `LagFail` or `LagSkip`. |
+| `Subscribe(SubscribeOptions) (*Subscription[T], error)` | `Start`: `StartNext()` (default), `StartOldest()`, `StartAt(ref)`. `OnLag`: `LagFail` or `LagSkip`. `WatermarkUpdates`: also wake and return on watermark advances. |
 | `Next(ctx, dst, limit)` | Block until records are available. |
 | `NextState(ctx, dst, limit)` | `Next` plus a `SourceState` read under the same lock. |
 | `TryNext(dst, limit)`, `Wake()` | Non-blocking variant and a coalesced wake channel for `select` loops. |
@@ -422,11 +422,15 @@ e, st := s.AsOf(t)
 
 Derived series are a loop you own. `NextState` returns the new records
 together with the source's newest record and watermark, captured in one
-atomic read, so you know exactly when you have caught up:
+atomic read, so you know exactly when you have caught up. With
+`WatermarkUpdates` it also returns, with no records, when only the watermark
+moved:
 
 ```go
 func deriveNotional(ctx context.Context, src *temporal.Series[Trade], dst *temporal.Series[int64]) error {
-	sub, err := src.Subscribe(temporal.SubscribeOptions{Start: temporal.StartOldest()})
+	// WatermarkUpdates: also return when only the watermark moved, so
+	// completeness declared after the last record is forwarded at once.
+	sub, err := src.Subscribe(temporal.SubscribeOptions{Start: temporal.StartOldest(), WatermarkUpdates: true})
 	if err != nil {
 		return err
 	}
@@ -435,6 +439,7 @@ func deriveNotional(ctx context.Context, src *temporal.Series[Trade], dst *tempo
 	in := make([]temporal.Entry[Trade], 0, 256)
 	out := make([]temporal.Input[int64], 0, 256)
 	var res []temporal.AppendResult
+	var last temporal.Ref
 	for {
 		var st temporal.SourceState
 		in, st, err = sub.NextState(ctx, in[:0], 256)
@@ -448,10 +453,13 @@ func deriveNotional(ctx context.Context, src *temporal.Series[Trade], dst *tempo
 				Meta:  temporal.InputMeta{EventTime: e.Meta.EventTime},
 			})
 		}
-		if res, err = dst.AppendBatch(res[:0], out); err != nil {
-			return err // nothing was applied; retry from the same position
+		if len(in) > 0 {
+			if res, err = dst.AppendBatch(res[:0], out); err != nil {
+				return err // nothing was applied; retry from the same position
+			}
+			last = in[len(in)-1].Meta.Ref
 		}
-		if in[len(in)-1].Meta.Ref.Seq == st.Newest.Seq {
+		if last == st.Newest {
 			dst.SetWatermark(st.Watermark) // caught up: forward completeness
 		}
 	}

@@ -159,3 +159,121 @@ func TestAllocs_SetWatermarkNoWaiters(t *testing.T) {
 		t.Fatalf("SetWatermark allocs = %v", n)
 	}
 }
+
+// nextState runs NextState on its own goroutine.
+func nextState(sub *Subscription[int]) <-chan struct {
+	got []Entry[int]
+	st  SourceState
+	err error
+} {
+	ch := make(chan struct {
+		got []Entry[int]
+		st  SourceState
+		err error
+	}, 1)
+	go func() {
+		got, st, err := sub.NextState(context.Background(), nil, 0)
+		ch <- struct {
+			got []Entry[int]
+			st  SourceState
+			err error
+		}{got, st, err}
+	}()
+	return ch
+}
+
+// With WatermarkUpdates, a watermark set after the last record wakes the
+// subscription, which returns the new state with no records, once.
+func TestSubscription_WatermarkUpdates(t *testing.T) {
+	s := mustNew(t, Config[int]{Capacity: 8})
+	sub := mustSubscribe(t, s, SubscribeOptions{Start: StartOldest(), WatermarkUpdates: true})
+	ctx := context.Background()
+
+	mustAppend(t, s, 1, at(10))
+	got, st, err := sub.NextState(ctx, nil, 0)
+	if err != nil || len(got) != 1 || st.Watermark != MinTimestamp {
+		t.Fatalf("records: %v %+v %v", values(got), st, err)
+	}
+
+	ch := nextState(sub)
+	select {
+	case r := <-ch:
+		t.Fatalf("returned without a change: %+v", r)
+	case <-time.After(20 * time.Millisecond):
+	}
+	s.SetWatermark(10)
+	select {
+	case r := <-ch:
+		if r.err != nil || len(r.got) != 0 || r.st.Watermark != 10 || r.st.Newest != (Ref{1, 1}) {
+			t.Fatalf("update: %+v", r)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("SetWatermark did not wake the subscription")
+	}
+
+	// Reported once: nothing more is pending.
+	if got, err := sub.TryNext(nil, 0); err != nil || len(got) != 0 {
+		t.Fatalf("TryNext after update: %v %v", values(got), err)
+	}
+
+	// Records returned together with an advance report it; it is not repeated.
+	mustAppend(t, s, 2, at(20))
+	s.SetWatermark(20)
+	got, st, err = sub.NextState(ctx, nil, 0)
+	if err != nil || len(got) != 1 || st.Watermark != 20 {
+		t.Fatalf("record with advance: %v %+v %v", values(got), st, err)
+	}
+	if got, err := sub.TryNext(nil, 0); err != nil || len(got) != 0 {
+		t.Fatalf("TryNext after record: %v %v", values(got), err)
+	}
+}
+
+// A watermark set just before Close is still reported before ErrClosed.
+func TestSubscription_WatermarkUpdatesBeforeClose(t *testing.T) {
+	s := mustNew(t, Config[int]{Capacity: 8})
+	sub := mustSubscribe(t, s, SubscribeOptions{Start: StartOldest(), WatermarkUpdates: true})
+	mustAppend(t, s, 1, at(10))
+	s.SetWatermark(MaxTimestamp)
+	s.Close()
+
+	ctx := context.Background()
+	got, st, err := sub.NextState(ctx, nil, 0)
+	if err != nil || len(got) != 1 || st.Watermark != MaxTimestamp {
+		t.Fatalf("drain: %v %+v %v", values(got), st, err)
+	}
+	if _, _, err := sub.NextState(ctx, nil, 0); err != ErrClosed {
+		t.Fatalf("after drain: %v", err)
+	}
+}
+
+// Without the option, watermark changes neither wake nor return.
+func TestSubscription_NoWatermarkUpdates(t *testing.T) {
+	s := mustNew(t, Config[int]{Capacity: 8})
+	sub := mustSubscribe(t, s, SubscribeOptions{})
+	s.SetWatermark(10)
+	if got, err := sub.TryNext(nil, 0); err != nil || len(got) != 0 {
+		t.Fatalf("TryNext: %v %v", values(got), err)
+	}
+	select {
+	case <-sub.Wake():
+		t.Fatal("SetWatermark woke a subscription without WatermarkUpdates")
+	default:
+	}
+}
+
+// Seek forgets the reported watermark, so the current one is reported again.
+func TestSubscription_WatermarkUpdatesSeek(t *testing.T) {
+	s := mustNew(t, Config[int]{Capacity: 8})
+	sub := mustSubscribe(t, s, SubscribeOptions{WatermarkUpdates: true})
+	s.SetWatermark(10)
+	ctx := context.Background()
+	if _, st, err := sub.NextState(ctx, nil, 0); err != nil || st.Watermark != 10 {
+		t.Fatalf("first: %+v %v", st, err)
+	}
+	if err := sub.Seek(StartNext()); err != nil {
+		t.Fatal(err)
+	}
+	if _, st, err := sub.NextState(ctx, nil, 0); err != nil || st.Watermark != 10 {
+		t.Fatalf("after Seek: %+v %v", st, err)
+	}
+}

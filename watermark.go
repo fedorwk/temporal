@@ -5,8 +5,8 @@ import "context"
 // SetWatermark declares the series complete through ts. The watermark is
 // monotonic: a value <= the current watermark is ignored and returns false.
 // SetWatermark on a closed Series returns false. The initial value, and the
-// value after Clear, is MinTimestamp. An advance wakes WaitWatermark callers,
-// after the lock is released.
+// value after Clear, is MinTimestamp. An advance wakes WaitWatermark callers
+// and subscriptions with WatermarkUpdates, after the lock is released.
 func (s *Series[T]) SetWatermark(ts Timestamp) bool {
 	s.mu.Lock()
 	if s.closed || ts <= s.watermark {
@@ -19,6 +19,7 @@ func (s *Series[T]) SetWatermark(ts Timestamp) bool {
 	if wake != nil {
 		close(wake)
 	}
+	s.notifyWatermark()
 	return true
 }
 
