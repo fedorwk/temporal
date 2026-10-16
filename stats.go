@@ -66,11 +66,8 @@ func (s *Series[T]) Stats() Stats {
 		Watermark:            s.watermark,
 		Subscribers:          s.sig.count(),
 	}
-	if len(s.idx) > 0 {
-		st.Indexes = make([]IndexStats, len(s.idx))
-		for i, ix := range s.idx {
-			st.Indexes[i] = ix.stats()
-		}
+	if !s.keys.none() {
+		st.Indexes = s.keys.stats()
 	}
 	if s.time != nil {
 		if k, ok := s.time.Min(); ok {

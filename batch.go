@@ -21,7 +21,7 @@ import "fmt"
 func (s *Series[T]) AppendBatch(dst []AppendResult, items []Input[T]) ([]AppendResult, error) {
 	var appended bool
 	var err error
-	if s.cfg.cloneOnWrite || len(s.idx) > 0 {
+	if s.cfg.cloneOnWrite || !s.keys.none() {
 		dst, appended, err = s.appendBatchWithCallbacks(dst, items)
 	} else {
 		// No user code runs, so nothing can panic under the lock and there is
@@ -83,15 +83,9 @@ func (s *Series[T]) prepareBatch(items []Input[T]) error {
 		}
 		s.cloned = s.cloned[:n]
 	}
-	if len(s.idx) > 0 {
-		for _, ix := range s.idx {
-			ix.beginBatch()
-		}
-		defer func() {
-			for _, ix := range s.idx {
-				ix.endBatch()
-			}
-		}()
+	if !s.keys.none() {
+		s.keys.beginBatch()
+		defer s.keys.endBatch()
 	}
 
 	sim := s.adm
@@ -101,21 +95,16 @@ func (s *Series[T]) prepareBatch(items []Input[T]) error {
 		if err != nil {
 			return batchErr(i, err)
 		}
-		p := itemPlan{flags: flags, existingIdx: -1}
+		p := itemPlan{flags: flags}
 		v := &items[i].Value
 		if s.cfg.cloneOnWrite {
 			s.cloned[i] = s.cfg.clone(*v)
 			v = &s.cloned[i]
 		}
-		if len(s.idx) > 0 {
-			next := sim.nextSeq()
-			if err := s.prepareIndexes(v, m, &p, next, sim.evictBelow(), i); err != nil {
+		if !s.keys.none() {
+			ref := Ref{Gen: s.gen, Seq: sim.nextSeq()}
+			if err := s.keys.prepare(v, m, flags, ref, sim.evictBelow(), i, &p.keyPlan); err != nil {
 				return batchErr(i, err)
-			}
-			if !p.drop {
-				for _, ix := range s.idx {
-					ix.stage(i, next)
-				}
 			}
 		}
 		if !p.drop { // a dropped item consumes no Seq and updates no tracker (P-03)

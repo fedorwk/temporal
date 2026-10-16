@@ -138,9 +138,6 @@ func (b *bounds) push(capacity int) (evicted Seq, didEvict bool) {
 	return evicted, didEvict
 }
 
-// reset empties the bounds so that the next Seq is 1.
-func (b *bounds) reset() { *b = bounds{} }
-
 // oldestRef and newestRef return the zero Ref when empty.
 func (b bounds) oldestRef(g Gen) Ref {
 	if b.empty() {

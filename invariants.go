@@ -67,12 +67,10 @@ func (s *Series[T]) checkInvariantsLocked() error {
 	if err := s.checkTimeIndexLocked(); err != nil {
 		return err
 	}
-	for _, ix := range s.idx {
-		if err := ix.checkLocked(); err != nil {
-			return err
-		}
+	if s.keys.none() {
+		return nil
 	}
-	return nil
+	return s.keys.check()
 }
 
 // checkTimeIndexLocked verifies that the time index holds exactly one key per

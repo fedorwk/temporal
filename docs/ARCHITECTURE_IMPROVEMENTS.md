@@ -10,7 +10,7 @@ Vocabulary: a **module** is anything with an interface and an implementation. It
 |---|---|---|---|
 | 1 | One admission state for Append and AppendBatch | Strong · **done (S13-01)** | series.go, batch.go, ring.go |
 | 2 | A change-signal module for Series wake-ups | Strong · **done (S13-02)** | subscription.go, watermark.go, series.go, batch.go |
-| 3 | Let the key-index set own its transaction protocol | Worth exploring | key_index.go, series.go, batch.go |
+| 3 | Let the key-index set own its transaction protocol | Worth exploring · **done (S13-03)** | key_index.go, series.go, batch.go |
 | 4 | Narrow the Subscription read interface | Worth exploring | subscription.go, example_test.go, README.md |
 | 5 | One status-precedence step for event-time point reads | Speculative | query_time.go, watermark.go, query_batch.go |
 
@@ -93,6 +93,8 @@ Each phase-5 feature (WaitWatermark, WatermarkUpdates, CloseWithError) had to ed
 ## 3. Let the key-index set own its transaction protocol
 
 **Strength:** Worth exploring · in-process
+
+**Status:** Done, see DECISIONS S13-03. `key_index_set.go` holds `keyIndexes[T]` (`prepare`, `beginBatch`/`endBatch`, `commit`, `drop`, `evict`, `reset`); the batch overlay moved from `Index[T]` to the internal `conflictIndex` that only `UniqueIndex` implements, and the set is tested without a Series.
 
 **Files:** `key_index.go` (`Index[T]`), `series.go` (`prepareIndexes`, `commitDrop`, `commit`), `batch.go` (`prepareBatch`)
 

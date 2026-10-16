@@ -43,7 +43,7 @@ type Series[T any] struct {
 	cfg  config[T]
 	ring ring[T]
 	time timeIndex // nil when TimeIndexNone
-	idx  []Index[T]
+	keys keyIndexes[T]
 	adm  admission // retained bounds, late and SourceSeq trackers
 	gen  Gen
 	id   uint64
@@ -52,7 +52,6 @@ type Series[T any] struct {
 	keyScratch []timeKey  // index query results, cap MaxReadBatch+1
 	delKeys    []timeKey  // commit-phase evictions
 	insKeys    []timeKey  // commit-phase insertions
-	xe         Entry[T]   // the entry handed to extractors; zeroed after use
 	plans      []itemPlan // AppendBatch prepare results, by batch position
 	cloned     []T        // AppendBatch CloneOnWrite values; cleared after use
 
@@ -103,10 +102,8 @@ func New[T any](cfg Config[T]) (*Series[T], error) {
 		s.insKeys = make([]timeKey, 0, 1)
 	}
 	s.plans = make([]itemPlan, 0, min(c.capacity, 16))
-	s.idx = append([]Index[T](nil), c.indexes...)
-	for _, ix := range s.idx {
-		ix.bind(s, c.capacity)
-	}
+	s.keys = newKeyIndexes(c.indexes)
+	s.keys.bind(s, &s.ring.metaRing, c.capacity)
 	return s, nil
 }
 
@@ -117,7 +114,7 @@ func New[T any](cfg Config[T]) (*Series[T], error) {
 // callbacks run before any mutation and the lock is released on the way out,
 // so a caller that recovers finds the Series unchanged and usable.
 func (s *Series[T]) Append(v T, m InputMeta) (AppendResult, error) {
-	if s.cfg.cloneOnWrite || len(s.idx) > 0 {
+	if s.cfg.cloneOnWrite || !s.keys.none() {
 		return s.appendWithCallbacks(&v, &m)
 	}
 	// No user code runs on this path, so nothing can panic while the lock is
@@ -159,10 +156,8 @@ func (s *Series[T]) appendWithCallbacks(v *T, m *InputMeta) (res AppendResult, e
 
 // itemPlan is the outcome of the prepare phase for one item.
 type itemPlan struct {
-	flags       Flags // series-set flags to apply
-	drop        bool  // a ConflictDrop index already maps the key
-	existing    Seq   // holder reported in AppendResult.Existing
-	existingIdx int   // index that produced existing, or -1
+	flags Flags // series-set flags to apply
+	keyPlan
 }
 
 func (s *Series[T]) appendLocked(v *T, m *InputMeta) (AppendResult, error) {
@@ -171,13 +166,14 @@ func (s *Series[T]) appendLocked(v *T, m *InputMeta) (AppendResult, error) {
 		s.n.rejected++
 		return AppendResult{}, err
 	}
-	p := itemPlan{flags: flags, existingIdx: -1}
+	p := itemPlan{flags: flags}
 	if s.cfg.cloneOnWrite {
 		c := s.cfg.clone(*v)
 		v = &c
 	}
-	if len(s.idx) > 0 {
-		if err := s.prepareIndexes(v, m, &p, s.adm.nextSeq(), s.adm.evictBelow(), 0); err != nil {
+	if !s.keys.none() {
+		ref := Ref{Gen: s.gen, Seq: s.adm.nextSeq()}
+		if err := s.keys.prepare(v, m, flags, ref, s.adm.evictBelow(), 0, &p.keyPlan); err != nil {
 			s.n.rejected++
 			return AppendResult{}, err
 		}
@@ -190,58 +186,15 @@ func (s *Series[T]) appendLocked(v *T, m *InputMeta) (AppendResult, error) {
 	return res, nil
 }
 
-// prepareIndexes runs P-03 step 6 for the item at batch position pos: each
-// index in Config.Indexes order extracts the key and checks conflicts. Any
-// error fails the item; otherwise any Drop drops it (Drop wins, §10.3).
-func (s *Series[T]) prepareIndexes(v *T, m *InputMeta, p *itemPlan, seq, evictBelow Seq, pos int) error {
-	e := &s.xe
-	e.Value = *v
-	e.Meta = Meta{
-		EventTime:   m.EventTime,
-		ReceiveTime: m.ReceiveTime,
-		SourceSeq:   m.SourceSeq,
-		SourceEpoch: m.SourceEpoch,
-		Flags:       m.Flags | p.flags,
-		Ref:         Ref{Gen: s.gen, Seq: seq},
-	}
-	defer func() { s.xe = Entry[T]{} }()
-
-	p.existingIdx = -1
-	firstDrop := -1
-	var dropHolder Seq
-	for i, ix := range s.idx {
-		d, err := ix.prepare(e, evictBelow, pos)
-		if err != nil {
-			return err
-		}
-		switch d.kind {
-		case decDrop:
-			if firstDrop < 0 {
-				firstDrop, dropHolder = i, d.existing
-			}
-		case decReplace, decKeepFirst:
-			if p.existingIdx < 0 {
-				p.existingIdx, p.existing = i, d.existing
-			}
-		}
-	}
-	if firstDrop >= 0 {
-		p.drop, p.existingIdx, p.existing = true, firstDrop, dropHolder
-	}
-	return nil
-}
-
 // commitDrop records a dropped item: no Seq is consumed and no index changes.
 func (s *Series[T]) commitDrop(p *itemPlan, pos int) AppendResult {
 	s.n.dropped++
-	for _, ix := range s.idx {
-		ix.noteDropped(pos)
-	}
+	s.keys.drop(pos)
 	return AppendResult{
 		Outcome:  OutcomeDropped,
 		Flags:    p.flags,
 		Existing: Ref{Gen: s.gen, Seq: p.existing},
-		Index:    s.idx[p.existingIdx].indexName(),
+		Index:    s.keys.name(p.by),
 	}
 }
 
@@ -256,21 +209,19 @@ func (s *Series[T]) applyTime() {
 	s.insKeys = s.insKeys[:0]
 }
 
-// commit admits one prepared item (admission.advance, as push and observe)
-// and stores it. It must not call user code.
+// commit admits one prepared item (admission push and observe) and stores it. It must not call user code.
 func (s *Series[T]) commit(v *T, m *InputMeta, p itemPlan, pos int) AppendResult {
 	seq, evicted := s.adm.push()
 	s.adm.observe(m)
 	res := AppendResult{Outcome: OutcomeAppended, Ref: Ref{Gen: s.gen, Seq: seq}, Flags: p.flags}
-	if p.existingIdx >= 0 {
+	if p.by != 0 {
 		res.Existing = Ref{Gen: s.gen, Seq: p.existing}
-		res.Index = s.idx[p.existingIdx].indexName()
+		res.Index = s.keys.name(p.by)
 	}
 
 	if evicted != 0 {
-		slot := s.ring.slot(evicted)
-		for _, ix := range s.idx {
-			ix.evict(slot, evicted)
+		if !s.keys.none() {
+			s.keys.evict(s.ring.slot(evicted), evicted)
 		}
 		et := s.ring.eventTime(evicted)
 		if s.time != nil {
@@ -292,11 +243,8 @@ func (s *Series[T]) commit(v *T, m *InputMeta, p itemPlan, pos int) AppendResult
 	if s.time != nil {
 		s.insKeys = append(s.insKeys, timeKey{eventTime: m.EventTime, seq: seq})
 	}
-	if len(s.idx) > 0 {
-		slot := s.ring.slot(seq)
-		for _, ix := range s.idx {
-			ix.commit(slot, seq, pos)
-		}
+	if !s.keys.none() {
+		s.keys.commit(s.ring.slot(seq), seq, pos)
 	}
 
 	s.n.appended++
@@ -331,8 +279,8 @@ func (s *Series[T]) Clear() error {
 	if s.time != nil {
 		s.time.Clear()
 	}
-	for _, ix := range s.idx {
-		ix.reset()
+	if !s.keys.none() {
+		s.keys.reset()
 	}
 	s.adm.reset()
 	s.env = envelope{}
