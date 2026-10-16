@@ -4,8 +4,6 @@ import (
 	"context"
 	"fmt"
 	"iter"
-	"slices"
-	"sync"
 )
 
 type startKind uint8
@@ -45,14 +43,6 @@ type SubscribeOptions struct {
 	// returned and no record is pending. Derive loops use it to forward
 	// completeness that arrives after the last record.
 	WatermarkUpdates bool
-}
-
-// subscriber is the notification endpoint shared with the Series.
-type subscriber struct {
-	wake      chan struct{} // buffer 1: coalesced wake-ups
-	done      chan struct{} // closed by Subscription.Close
-	wmUpdates bool          // woken by SetWatermark; immutable
-	closeOnce sync.Once
 }
 
 // Subscription reads a Series in Seq order. It must be used by one goroutine
@@ -96,12 +86,7 @@ func (s *Series[T]) Subscribe(opts SubscribeOptions) (*Subscription[T], error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	sub.cur = s.startCursor(opts.Start)
-	var list []*subscriber
-	if p := s.subs.Load(); p != nil {
-		list = slices.Clone(*p)
-	}
-	list = append(list, sub.sub)
-	s.subs.Store(&list)
+	s.sig.add(sub.sub)
 	return sub, nil
 }
 
@@ -121,56 +106,7 @@ func (s *Series[T]) startCursor(from StartFrom) Cursor {
 func (s *Series[T]) unsubscribe(sub *subscriber) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	p := s.subs.Load()
-	if p == nil {
-		return
-	}
-	list := slices.DeleteFunc(slices.Clone(*p), func(x *subscriber) bool { return x == sub })
-	s.subs.Store(&list)
-}
-
-// notify wakes every subscriber without blocking. It is called after the
-// mutex is released; a full wake buffer means a wake-up is already pending.
-func (s *Series[T]) notify() {
-	if debugAssert {
-		s.dbgNotifies.Add(1)
-	}
-	p := s.subs.Load()
-	if p == nil {
-		return
-	}
-	for _, sub := range *p {
-		select {
-		case sub.wake <- struct{}{}:
-		default:
-		}
-	}
-}
-
-// notifyWatermark wakes the subscribers that follow the watermark. Like
-// notify it is called after the mutex is released and never blocks.
-func (s *Series[T]) notifyWatermark() {
-	p := s.subs.Load()
-	if p == nil {
-		return
-	}
-	for _, sub := range *p {
-		if !sub.wmUpdates {
-			continue
-		}
-		select {
-		case sub.wake <- struct{}{}:
-		default:
-		}
-	}
-}
-
-// subscriberCount returns the number of open subscriptions.
-func (s *Series[T]) subscriberCount() int {
-	if p := s.subs.Load(); p != nil {
-		return len(*p)
-	}
-	return 0
+	s.sig.remove(sub)
 }
 
 func (sub *Subscription[T]) closed() bool {

@@ -9,7 +9,7 @@ Vocabulary: a **module** is anything with an interface and an implementation. It
 | # | Candidate | Strength | Files |
 |---|---|---|---|
 | 1 | One admission state for Append and AppendBatch | Strong · **done (S13-01)** | series.go, batch.go, ring.go |
-| 2 | A change-signal module for Series wake-ups | Strong | subscription.go, watermark.go, series.go, batch.go |
+| 2 | A change-signal module for Series wake-ups | Strong · **done (S13-02)** | subscription.go, watermark.go, series.go, batch.go |
 | 3 | Let the key-index set own its transaction protocol | Worth exploring | key_index.go, series.go, batch.go |
 | 4 | Narrow the Subscription read interface | Worth exploring | subscription.go, example_test.go, README.md |
 | 5 | One status-precedence step for event-time point reads | Speculative | query_time.go, watermark.go, query_batch.go |
@@ -60,6 +60,8 @@ prepareBatch ──► switch / locals / trk    prepareBatch ─┴─► admiss
 ## 2. A change-signal module for Series wake-ups
 
 **Strength:** Strong · in-process · hot spot (4 of the last 6 commits)
+
+**Status:** Done, see DECISIONS S13-02. `signal.go` holds `changeSignal`: writers call `records()`, `watermark()` or `closed()` after unlocking, and WaitWatermark takes its channel from `watermarkWait()`. Three methods instead of one `fire(change)`, so the Append path inlines to the old notify loop; `dbgNotifies` moved into the module as `dbgFired`.
 
 **Files:** `subscription.go` (`notify`, `notifyWatermark`, `subs`), `watermark.go` (`wmWait`, `takeWatermarkWaiters`), `series.go` (`Clear`, `CloseWithError`), `batch.go`
 

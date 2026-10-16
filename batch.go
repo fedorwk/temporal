@@ -31,7 +31,7 @@ func (s *Series[T]) AppendBatch(dst []AppendResult, items []Input[T]) ([]AppendR
 		s.mu.Unlock()
 	}
 	if appended {
-		s.notify()
+		s.sig.records()
 	}
 	return dst, err
 }

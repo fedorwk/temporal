@@ -64,7 +64,7 @@ func (s *Series[T]) Stats() Stats {
 		MinEvicted:           s.env.min,
 		MaxEvicted:           s.env.max,
 		Watermark:            s.watermark,
-		Subscribers:          s.subscriberCount(),
+		Subscribers:          s.sig.count(),
 	}
 	if len(s.idx) > 0 {
 		st.Indexes = make([]IndexStats, len(s.idx))

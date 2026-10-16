@@ -59,13 +59,11 @@ type Series[T any] struct {
 	env       envelope
 	watermark Timestamp
 	closed    bool
-	closeErr  error         // returned by operations on the closed Series: ErrClosed or *ClosedError
-	cause     error         // the CloseWithError cause; nil for a clean close
-	wmWait    chan struct{} // closed to wake WaitWatermark callers; nil when none wait
+	closeErr  error // returned by operations on the closed Series: ErrClosed or *ClosedError
+	cause     error // the CloseWithError cause; nil for a clean close
 	n         counters
 
-	subs        atomic.Pointer[[]*subscriber] // copy-on-write; read without mu by notify
-	dbgNotifies atomic.Uint64                 // notify calls, counted in temporaldebug builds only
+	sig changeSignal // wakes subscriptions and WaitWatermark callers
 }
 
 // New creates a Series. It returns ErrInvalidConfig for a malformed config.
@@ -134,7 +132,7 @@ func (s *Series[T]) Append(v T, m InputMeta) (AppendResult, error) {
 	res, err := s.appendLocked(&v, &m)
 	s.mu.Unlock()
 	if err == nil && res.Outcome == OutcomeAppended {
-		s.notify()
+		s.sig.records()
 	}
 	return res, err
 }
@@ -148,7 +146,7 @@ func (s *Series[T]) appendWithCallbacks(v *T, m *InputMeta) (res AppendResult, e
 	defer func() {
 		s.mu.Unlock()
 		if appended {
-			s.notify()
+			s.sig.records()
 		}
 	}()
 	if s.closed {
@@ -341,7 +339,7 @@ func (s *Series[T]) Clear() error {
 	s.watermark = MinTimestamp
 	s.n.clears++
 	s.mu.Unlock()
-	s.notify()
+	s.sig.records()
 	return nil
 }
 
@@ -367,12 +365,8 @@ func (s *Series[T]) CloseWithError(cause error) error {
 	if cause != nil {
 		s.closeErr = &ClosedError{Cause: cause}
 	}
-	wake := s.takeWatermarkWaiters()
 	s.mu.Unlock()
-	if wake != nil {
-		close(wake)
-	}
-	s.notify()
+	s.sig.closed()
 	return nil
 }
 

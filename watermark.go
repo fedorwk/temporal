@@ -14,12 +14,8 @@ func (s *Series[T]) SetWatermark(ts Timestamp) bool {
 		return false
 	}
 	s.watermark = ts
-	wake := s.takeWatermarkWaiters()
 	s.mu.Unlock()
-	if wake != nil {
-		close(wake)
-	}
-	s.notifyWatermark()
+	s.sig.watermark()
 	return true
 }
 
@@ -53,10 +49,7 @@ func (s *Series[T]) WaitWatermark(ctx context.Context, ts Timestamp) (Timestamp,
 			s.mu.Unlock()
 			return wm, err
 		}
-		if s.wmWait == nil {
-			s.wmWait = make(chan struct{})
-		}
-		wake := s.wmWait
+		wake := s.sig.watermarkWait()
 		s.mu.Unlock()
 
 		select {
@@ -65,14 +58,6 @@ func (s *Series[T]) WaitWatermark(ctx context.Context, ts Timestamp) (Timestamp,
 			return wm, ctx.Err()
 		}
 	}
-}
-
-// takeWatermarkWaiters detaches the channel WaitWatermark callers block on, so
-// the caller can close it after releasing the lock. Callers hold s.mu.
-func (s *Series[T]) takeWatermarkWaiters() chan struct{} {
-	wake := s.wmWait
-	s.wmWait = nil
-	return wake
 }
 
 // Read gating (§19, P-10, P-13). Every predicate is false unless
