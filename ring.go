@@ -128,10 +128,9 @@ func (b bounds) nextSeq() Seq { return b.newest + 1 }
 // is evicted first and returned.
 func (b *bounds) push(capacity int) (evicted Seq, didEvict bool) {
 	s := b.newest + 1
-	switch {
-	case b.empty():
+	if b.empty() {
 		b.oldest = s
-	case b.len() == capacity:
+	} else if s-b.oldest == Seq(capacity) { // full: len == capacity
 		evicted, didEvict = b.oldest, true
 		b.oldest++
 	}

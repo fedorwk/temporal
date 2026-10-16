@@ -1,6 +1,6 @@
 # Architecture Improvements
 
-Possible deepening refactors, from an architecture review on 2026-10-16. None is decided; each needs its own design pass before code changes.
+Possible deepening refactors, from an architecture review on 2026-10-16. Each needs its own design pass before code changes; the ones that are done name the decision that records how.
 
 The review focused on the phase-5 hot spots (subscription, watermark, write path). There is no `GLOSSARY.md` or `docs/adr/`; domain terms follow the spec and README, and `docs/DECISIONS.md` is treated as the decision log.
 
@@ -8,7 +8,7 @@ Vocabulary: a **module** is anything with an interface and an implementation. It
 
 | # | Candidate | Strength | Files |
 |---|---|---|---|
-| 1 | One admission state for Append and AppendBatch | Strong | series.go, batch.go, ring.go |
+| 1 | One admission state for Append and AppendBatch | Strong · **done (S13-01)** | series.go, batch.go, ring.go |
 | 2 | A change-signal module for Series wake-ups | Strong | subscription.go, watermark.go, series.go, batch.go |
 | 3 | Let the key-index set own its transaction protocol | Worth exploring | key_index.go, series.go, batch.go |
 | 4 | Narrow the Subscription read interface | Worth exploring | subscription.go, example_test.go, README.md |
@@ -21,6 +21,8 @@ Vocabulary: a **module** is anything with an interface and an implementation. It
 ## 1. One admission state for Append and AppendBatch
 
 **Strength:** Strong · in-process
+
+**Status:** Done, see DECISIONS S13-01. `admission.go` holds the state and its rules (`check`, `nextSeq`, `evictBelow`, `push` + `observe`, `reset`); commit admits through `s.adm` and the batch prepare phase runs the same calls on a copy. Admitting is split into `push` and `observe` so each inlines; Append was not turned into a one-item batch, to keep the S12-01 no-callback path as it was.
 
 **Files:** `series.go` (`appendLocked`, `prepareMeta`, `commit`), `batch.go` (`prepareBatch`), `ring.go` (`bounds`)
 

@@ -330,7 +330,7 @@ func (ix *UniqueIndex[T, K]) Len() int {
 func (ix *UniqueIndex[T, K]) checkLocked() error {
 	s := ix.s
 	want := 0
-	for seq := s.b.oldest; !s.b.empty() && seq <= s.b.newest; seq++ {
+	for seq := s.adm.b.oldest; !s.adm.b.empty() && seq <= s.adm.b.newest; seq++ {
 		slot := s.ring.slot(seq)
 		if !ix.indexed.get(slot) {
 			continue
@@ -353,7 +353,7 @@ func (ix *UniqueIndex[T, K]) checkLocked() error {
 // countUnretainedIndexed counts indexed bits on slots that hold no retained row.
 func countUnretainedIndexed[T any](s *Series[T], indexed bitset) int {
 	retained := newBitset(s.cfg.capacity)
-	for seq := s.b.oldest; !s.b.empty() && seq <= s.b.newest; seq++ {
+	for seq := s.adm.b.oldest; !s.adm.b.empty() && seq <= s.adm.b.newest; seq++ {
 		retained.set(s.ring.slot(seq))
 	}
 	n := 0
@@ -493,7 +493,7 @@ func (ix *MultiIndex[T, K]) Get(dst []Entry[T], k K, limit int, o Order) ([]Entr
 		return dst, ReadInfo{Status: StatusInvalid}
 	}
 	defer s.mu.Unlock()
-	info := ReadInfo{Status: StatusNotFound, Oldest: s.b.oldestRef(s.gen)}
+	info := ReadInfo{Status: StatusNotFound, Oldest: s.adm.b.oldestRef(s.gen)}
 	p := ix.m[k]
 	if p == nil {
 		return dst, info
@@ -557,7 +557,7 @@ func (ix *MultiIndex[T, K]) Keys() int {
 func (ix *MultiIndex[T, K]) checkLocked() error {
 	s := ix.s
 	want := map[K][]Seq{}
-	for seq := s.b.oldest; !s.b.empty() && seq <= s.b.newest; seq++ {
+	for seq := s.adm.b.oldest; !s.adm.b.empty() && seq <= s.adm.b.newest; seq++ {
 		if slot := s.ring.slot(seq); ix.indexed.get(slot) {
 			want[ix.keys[slot]] = append(want[ix.keys[slot]], seq)
 		}

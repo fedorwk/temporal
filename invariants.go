@@ -12,7 +12,7 @@ func (s *Series[T]) CheckInvariants() error {
 }
 
 func (s *Series[T]) checkInvariantsLocked() error {
-	b := s.b
+	b := s.adm.b
 	if s.gen == 0 {
 		return fmt.Errorf("gen is 0")
 	}
@@ -32,14 +32,14 @@ func (s *Series[T]) checkInvariantsLocked() error {
 		if s.env.min > s.env.max {
 			return fmt.Errorf("envelope min %d > max %d", s.env.min, s.env.max)
 		}
-		if !s.hasObserved || s.env.max > s.maxObserved {
-			return fmt.Errorf("envelope max %d not covered by max observed %d (has %v)",
-				s.env.max, s.maxObserved, s.hasObserved)
+		if !s.adm.observed() || s.env.max > s.adm.maxObserved {
+			return fmt.Errorf("envelope max %d not covered by max observed %d",
+				s.env.max, s.adm.maxObserved)
 		}
 	} else if s.env.min != 0 || s.env.max != 0 {
 		return fmt.Errorf("empty envelope has bounds [%d, %d]", s.env.min, s.env.max)
 	}
-	if !b.empty() && !s.hasObserved {
+	if !b.empty() && !s.adm.observed() {
 		return fmt.Errorf("%d records retained but nothing observed", b.len())
 	}
 
@@ -57,8 +57,8 @@ func (s *Series[T]) checkInvariantsLocked() error {
 		if m.eventTime == MinTimestamp || m.eventTime == MaxTimestamp {
 			return fmt.Errorf("seq %d stores sentinel EventTime %d", seq, m.eventTime)
 		}
-		if m.eventTime > s.maxObserved {
-			return fmt.Errorf("seq %d EventTime %d > max observed %d", seq, m.eventTime, s.maxObserved)
+		if m.eventTime > s.adm.maxObserved {
+			return fmt.Errorf("seq %d EventTime %d > max observed %d", seq, m.eventTime, s.adm.maxObserved)
 		}
 		if m.flags&SeriesFlagsMask&^(FlagLate|FlagSourceSeqNotIncreasing) != 0 {
 			return fmt.Errorf("seq %d has reserved flag bits %#x", seq, m.flags)
@@ -81,11 +81,11 @@ func (s *Series[T]) checkTimeIndexLocked() error {
 	if s.time == nil {
 		return nil
 	}
-	if got, want := s.time.Len(), s.b.len(); got != want {
+	if got, want := s.time.Len(), s.adm.b.len(); got != want {
 		return fmt.Errorf("time index len %d, series len %d", got, want)
 	}
-	if x, ok := s.time.(*orderedTimeIndex); ok && x.n > 0 && x.first != s.b.oldest {
-		return fmt.Errorf("ordered time index starts at seq %d, oldest is %d", x.first, s.b.oldest)
+	if x, ok := s.time.(*orderedTimeIndex); ok && x.n > 0 && x.first != s.adm.b.oldest {
+		return fmt.Errorf("ordered time index starts at seq %d, oldest is %d", x.first, s.adm.b.oldest)
 	}
 	const chunk = 64
 	keys := make([]timeKey, 0, chunk)
@@ -99,8 +99,8 @@ func (s *Series[T]) checkTimeIndexLocked() error {
 			if seen > 0 && !keyLess(prev, k) {
 				return fmt.Errorf("time index keys out of order: %v then %v", prev, k)
 			}
-			if !s.b.retained(k.seq) {
-				return fmt.Errorf("time index key %v is not retained (bounds %+v)", k, s.b)
+			if !s.adm.b.retained(k.seq) {
+				return fmt.Errorf("time index key %v is not retained (bounds %+v)", k, s.adm.b)
 			}
 			if et := s.ring.eventTime(k.seq); et != k.eventTime {
 				return fmt.Errorf("time index key %v, ring EventTime %d", k, et)
@@ -113,8 +113,8 @@ func (s *Series[T]) checkTimeIndexLocked() error {
 		}
 		start = timeKey{eventTime: prev.eventTime, seq: prev.seq + 1}
 	}
-	if seen != s.b.len() {
-		return fmt.Errorf("time index ascend saw %d keys, series len %d", seen, s.b.len())
+	if seen != s.adm.b.len() {
+		return fmt.Errorf("time index ascend saw %d keys, series len %d", seen, s.adm.b.len())
 	}
 	if k, ok := s.time.Min(); ok != (seen > 0) || (ok && seen > 0 && k.eventTime > prev.eventTime) {
 		return fmt.Errorf("time index Min %v (ok %v) inconsistent with scan", k, ok)

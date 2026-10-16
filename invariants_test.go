@@ -28,12 +28,12 @@ func TestCheckInvariants_DetectsCorruption(t *testing.T) {
 		corrupt func(f fixture)
 		want    string
 	}{
-		{"bounds beyond capacity", func(f fixture) { f.s.b.oldest = 1 }, "capacity"},
-		{"bounds inverted", func(f fixture) { f.s.b.oldest = 9 }, "oldest"},
-		{"reserved newest", func(f fixture) { f.s.b.newest = seqMax }, "reserved"},
+		{"bounds beyond capacity", func(f fixture) { f.s.adm.b.oldest = 1 }, "capacity"},
+		{"bounds inverted", func(f fixture) { f.s.adm.b.oldest = 9 }, "oldest"},
+		{"reserved newest", func(f fixture) { f.s.adm.b.newest = seqMax }, "reserved"},
 		{"envelope inverted", func(f fixture) { f.s.env.min = 5 }, "envelope"},
 		{"envelope without flag", func(f fixture) { f.s.env = envelope{min: 1} }, "envelope"},
-		{"max observed too low", func(f fixture) { f.s.maxObserved = 4 }, "observed"},
+		{"max observed too low", func(f fixture) { f.s.adm.maxObserved = 4 }, "observed"},
 		{"stored sentinel", func(f fixture) { f.s.ring.metas[f.s.ring.slot(4)].eventTime = MaxTimestamp }, "sentinel"},
 		{"reserved flag bit", func(f fixture) { f.s.ring.metas[f.s.ring.slot(4)].flags |= 1 << 20 }, "flag"},
 		{"time index missing key", func(f fixture) { f.s.time.Delete(timeKey{eventTime: 4, seq: 4}) }, "time index"},

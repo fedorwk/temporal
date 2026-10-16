@@ -5,10 +5,10 @@ package temporal
 func (s *Series[T]) testSetNewest(n Seq) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if !s.b.empty() {
+	if !s.adm.b.empty() {
 		panic("testSetNewest on a non-empty series")
 	}
-	s.b.newest = n
+	s.adm.b.newest = n
 }
 
 // testSetGen sets the generation, for ErrGenExhausted tests.
