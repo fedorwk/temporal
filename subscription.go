@@ -38,10 +38,11 @@ type SubscribeOptions struct {
 	Start StartFrom // zero value = StartNext
 	OnLag LagPolicy
 	// WatermarkUpdates makes the subscription follow the watermark too:
-	// SetWatermark wakes it, and NextState (and Next, TryNext) also return,
-	// with no records, when the watermark has advanced past the last state
-	// returned and no record is pending. Derive loops use it to forward
-	// completeness that arrives after the last record.
+	// SetWatermark wakes it, and a read (Read, TryRead, Next, TryNext) also
+	// returns, with no records and Update.WatermarkAdvanced set, when the
+	// watermark has advanced past the last one reported and no record is
+	// pending. Derive loops use it to forward completeness that arrives after
+	// the last record.
 	WatermarkUpdates bool
 }
 
@@ -58,12 +59,25 @@ type Subscription[T any] struct {
 }
 
 // SourceState is the state of the subscribed Series captured in the same lock
-// acquisition as a read (see NextState).
+// acquisition as a read (see Read).
 type SourceState struct {
 	Gen                  Gen
 	Newest               Ref       // newest retained record; zero if the Series is empty
 	Watermark            Timestamp // the Series watermark at the read
 	MaxObservedEventTime Timestamp // MinTimestamp if nothing was accepted in Gen
+}
+
+// Update describes what one read found. It is zero when the read returns an
+// error. A read with Records == 0 and !WatermarkAdvanced found nothing new:
+// the next change is signalled on Wake.
+type Update struct {
+	State   SourceState // captured under the same lock as the records
+	Records int         // entries appended to dst by this read
+	// WatermarkAdvanced reports that State.Watermark is newer than the last
+	// watermark this subscription reported (MinTimestamp at Subscribe and
+	// after Seek). Each advance is reported once: with the records it came
+	// with, or, under WatermarkUpdates, alone.
+	WatermarkAdvanced bool
 }
 
 // Subscribe registers a subscription. It succeeds on a closed Series, whose
@@ -118,11 +132,11 @@ func (sub *Subscription[T]) closed() bool {
 	}
 }
 
-// poll is one locked step of the §17.2 algorithm. It reports whether data was
-// returned; err is non-nil for ErrClosed, ErrReset, ErrInvalidInput and lag
-// under LagFail. Lag is evaluated in the same lock acquisition as the copy,
-// and the cursor moves only after a successful copy (S-005).
-func (sub *Subscription[T]) poll(dst []Entry[T], limit int) ([]Entry[T], SourceState, bool, error) {
+// poll is one locked step of the §17.2 algorithm and the body of TryRead; err
+// is non-nil for ErrClosed, ErrReset, ErrInvalidInput and lag under LagFail.
+// Lag is evaluated in the same lock acquisition as the copy, and the cursor
+// moves only after a successful copy (S-005).
+func (sub *Subscription[T]) poll(dst []Entry[T], limit int) ([]Entry[T], Update, error) {
 	s := sub.s
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -134,11 +148,11 @@ func (sub *Subscription[T]) poll(dst []Entry[T], limit int) ([]Entry[T], SourceS
 	}
 	switch {
 	case sub.closed():
-		return dst, snap, false, ErrClosed
+		return dst, Update{}, ErrClosed
 	case sub.cur.Gen < s.gen:
-		return dst, snap, false, ErrReset
+		return dst, Update{}, ErrReset
 	case sub.cur.Gen > s.gen:
-		return dst, snap, false, fmt.Errorf("%w: subscription cursor from a later generation", ErrInvalidInput)
+		return dst, Update{}, fmt.Errorf("%w: subscription cursor from a later generation", ErrInvalidInput)
 	}
 
 	next := min(sub.cur.Next, s.adm.b.nextSeq()) // clamps StartAt beyond Newest+1
@@ -146,7 +160,7 @@ func (sub *Subscription[T]) poll(dst []Entry[T], limit int) ([]Entry[T], SourceS
 	if !s.adm.b.empty() && next < s.adm.b.oldest {
 		missed := uint64(s.adm.b.oldest - next)
 		if sub.onLag == LagFail {
-			return dst, snap, false, &LagError{
+			return dst, Update{}, &LagError{
 				Cursor: sub.cur,
 				Oldest: Ref{Gen: s.gen, Seq: s.adm.b.oldest},
 				Missed: missed,
@@ -163,18 +177,19 @@ func (sub *Subscription[T]) poll(dst []Entry[T], limit int) ([]Entry[T], SourceS
 		}
 		sub.cur.Next = next + Seq(n)
 		sub.skipped += skip
+		adv := snap.Watermark > sub.lastWM
 		sub.lastWM = snap.Watermark
-		return dst, snap, true, nil
+		return dst, Update{State: snap, Records: n, WatermarkAdvanced: adv}, nil
 	}
 	sub.cur.Next = next
 	if sub.sub.wmUpdates && snap.Watermark > sub.lastWM {
 		sub.lastWM = snap.Watermark
-		return dst, snap, true, nil
+		return dst, Update{State: snap, WatermarkAdvanced: true}, nil
 	}
 	if s.closed {
-		return dst, snap, false, s.closeErr
+		return dst, Update{}, s.closeErr
 	}
-	return dst, snap, false, nil
+	return dst, Update{State: snap}, nil
 }
 
 // Next blocks until at least one record is available and appends up to
@@ -183,39 +198,42 @@ func (sub *Subscription[T]) poll(dst []Entry[T], limit int) ([]Entry[T], SourceS
 // without moving the cursor), ErrClosed after Close or once a closed Series is
 // drained (a *ClosedError carrying the cause if the Series was closed with
 // CloseWithError), ErrReset after Clear until Seek, and a *LagError (ErrLagged)
-// if the cursor fell behind retention under LagFail.
+// if the cursor fell behind retention under LagFail. With WatermarkUpdates it
+// also returns, with no records, when only the watermark moved.
 func (sub *Subscription[T]) Next(ctx context.Context, dst []Entry[T], limit int) ([]Entry[T], error) {
-	out, _, err := sub.NextState(ctx, dst, limit)
+	out, _, err := sub.Read(ctx, dst, limit)
 	return out, err
 }
 
-// NextState is Next that also returns the state of the source Series captured
-// under the same lock as the records (zero on error). It is the building block
+// Read is Next that also reports what the read found: the state of the source
+// Series captured under the same lock as the records, how many records were
+// appended, and whether the watermark advanced. It returns once there are
+// records or, with WatermarkUpdates, a watermark advance, so Records > 0 ||
+// WatermarkAdvanced holds on every nil-error return. It is the building block
 // for derived series: after processing a batch whose last record is
-// state.Newest, every record up to state.Watermark has been seen, so the
+// u.State.Newest, every record up to u.State.Watermark has been seen, so the
 // watermark may be forwarded to a destination series. A producer usually
-// advances the watermark after appending, so subscribe with WatermarkUpdates:
-// NextState then also returns with no records when only the watermark moved,
-// and the loop can forward it at once. See ExampleSubscription_NextState for a
+// advances the watermark after appending, so subscribe with WatermarkUpdates
+// and the loop can forward it at once. See ExampleSubscription_Read for a
 // complete derive loop.
-func (sub *Subscription[T]) NextState(ctx context.Context, dst []Entry[T], limit int) ([]Entry[T], SourceState, error) {
+func (sub *Subscription[T]) Read(ctx context.Context, dst []Entry[T], limit int) ([]Entry[T], Update, error) {
 	for {
 		if err := ctx.Err(); err != nil {
-			return dst, SourceState{}, err
+			return dst, Update{}, err
 		}
-		out, state, got, err := sub.poll(dst, limit)
+		out, u, err := sub.poll(dst, limit)
 		switch {
 		case err != nil:
-			return out, SourceState{}, err
-		case got:
-			return out, state, nil
+			return out, Update{}, err
+		case u.Records > 0 || u.WatermarkAdvanced:
+			return out, u, nil
 		}
 		select {
 		case <-sub.sub.wake:
 		case <-ctx.Done():
-			return dst, SourceState{}, ctx.Err()
+			return dst, Update{}, ctx.Err()
 		case <-sub.sub.done:
-			return dst, SourceState{}, ErrClosed
+			return dst, Update{}, ErrClosed
 		}
 	}
 }
@@ -255,23 +273,18 @@ func (sub *Subscription[T]) All(ctx context.Context, limit int) iter.Seq2[Entry[
 
 // TryNext is Next without blocking: it may return zero entries and a nil error.
 func (sub *Subscription[T]) TryNext(dst []Entry[T], limit int) ([]Entry[T], error) {
-	out, _, _, err := sub.poll(dst, limit)
+	out, _, err := sub.poll(dst, limit)
 	return out, err
 }
 
-// TryNextState is NextState without blocking: it may return zero entries and a
-// nil error. The state is captured under the same lock as the entries, so
-// after a call that returns nothing new, every record up to state.Watermark
-// has been read. Loops that wait on several subscriptions use it with Wake.
-// With WatermarkUpdates, a watermark advance is reported before a close, and
-// one wake-up may stand for both: after a wake-up, call until a call returns
-// neither records nor a changed watermark (or an error).
-func (sub *Subscription[T]) TryNextState(dst []Entry[T], limit int) ([]Entry[T], SourceState, error) {
-	out, state, _, err := sub.poll(dst, limit)
-	if err != nil {
-		return out, SourceState{}, err
-	}
-	return out, state, nil
+// TryRead is Read without blocking: one read step, which may find nothing.
+// A loop that waits on several subscriptions calls it after each receive
+// from Wake until a call returns Records == 0 && !WatermarkAdvanced (or an
+// error); one wake-up may stand for several changes, for example a watermark
+// advance (reported first) and a close. After such a call, every record up
+// to u.State.Watermark has been read.
+func (sub *Subscription[T]) TryRead(dst []Entry[T], limit int) ([]Entry[T], Update, error) {
+	return sub.poll(dst, limit)
 }
 
 // Seek moves the cursor to a start position in the current generation. It is
@@ -297,7 +310,7 @@ func (sub *Subscription[T]) Cursor() Cursor { return sub.cur }
 // Skipped returns the number of records skipped under LagSkip.
 func (sub *Subscription[T]) Skipped() uint64 { return sub.skipped }
 
-// Wake returns the coalesced wake channel, for select loops around TryNext.
+// Wake returns the coalesced wake channel, for select loops around TryRead.
 // A receive means the Series may have changed.
 func (sub *Subscription[T]) Wake() <-chan struct{} { return sub.sub.wake }
 

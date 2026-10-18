@@ -10,7 +10,7 @@ package temporal
 type admission struct {
 	rules       admissionRules // fixed at New; copied along, never changed
 	b           bounds
-	maxObserved Timestamp // largest accepted EventTime in this generation; MinTimestamp if none (S2-02)
+	maxObserved Timestamp // largest accepted EventTime this generation, or MinTimestamp (S2-02)
 	srcSeq      sourceSeqTracker
 }
 

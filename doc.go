@@ -5,7 +5,7 @@
 // stored in arrival order and can be read by arrival position (Seq), by event
 // time when an event-time index is configured, and by key through optional
 // key indexes. Subscriptions replay records in arrival order; derived series
-// are built on them by the caller (see Subscription.NextState).
+// are built on them by the caller (see Subscription.Read).
 //
 // # Identity: Seq, Gen and Ref
 //
@@ -135,11 +135,13 @@
 // block producers.
 //
 // A derived series (bars, indicators, filtered streams) is a loop the caller
-// owns: read the source with Subscription.NextState, compute outputs outside
-// any lock, append them to the destination with one AppendBatch, advance a
+// owns: read the source with Subscription.Read, compute outputs outside any
+// lock, append them to the destination with one AppendBatch, advance a
 // checkpoint only after that append succeeds, and forward the source watermark
-// with SetWatermark once the batch reached SourceState.Newest. The library
-// starts no goroutines; ExampleSubscription_NextState shows the complete loop.
+// with SetWatermark once the batch reached Update.State.Newest. The library
+// starts no goroutines; ExampleSubscription_Read shows the complete loop, and
+// ExampleSubscription_TryRead the non-blocking form for loops over several
+// sources.
 //
 // # Synchronization model
 //

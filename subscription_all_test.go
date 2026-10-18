@@ -77,23 +77,23 @@ func TestSubscriptionAll_Break(t *testing.T) {
 	}
 }
 
-// TryNextState returns what is pending with the state captured alongside,
-// and never blocks.
-func TestSubscription_TryNextState(t *testing.T) {
+// TryRead returns what is pending with the state captured alongside, and
+// never blocks.
+func TestSubscription_TryRead(t *testing.T) {
 	s := mustNew(t, Config[int]{Capacity: 8})
 	sub := mustSubscribe(t, s, SubscribeOptions{Start: StartOldest()})
-	got, st, err := sub.TryNextState(nil, 0)
-	if err != nil || len(got) != 0 || st.Watermark != MinTimestamp {
-		t.Fatalf("empty: %v %+v %v", values(got), st, err)
+	got, u, err := sub.TryRead(nil, 0)
+	if err != nil || len(got) != 0 || u.State.Watermark != MinTimestamp || u.Records != 0 || u.WatermarkAdvanced {
+		t.Fatalf("empty: %v %+v %v", values(got), u, err)
 	}
 	mustAppend(t, s, 1, at(10))
 	s.SetWatermark(10)
-	got, st, err = sub.TryNextState(nil, 0)
-	if err != nil || !slices.Equal(values(got), []int{1}) || st.Watermark != 10 || st.Newest != (Ref{1, 1}) {
-		t.Fatalf("pending: %v %+v %v", values(got), st, err)
+	got, u, err = sub.TryRead(nil, 0)
+	if err != nil || !slices.Equal(values(got), []int{1}) || u.State.Watermark != 10 || u.State.Newest != (Ref{1, 1}) || u.Records != 1 {
+		t.Fatalf("pending: %v %+v %v", values(got), u, err)
 	}
 	s.CloseWithError(errFeed)
-	if _, st, err := sub.TryNextState(nil, 0); !errors.Is(err, errFeed) || st != (SourceState{}) {
-		t.Fatalf("closed: %+v %v", st, err)
+	if _, u, err := sub.TryRead(nil, 0); !errors.Is(err, errFeed) || u != (Update{}) {
+		t.Fatalf("closed: %+v %v", u, err)
 	}
 }

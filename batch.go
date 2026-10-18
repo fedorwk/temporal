@@ -102,8 +102,7 @@ func (s *Series[T]) prepareBatch(items []Input[T]) error {
 			v = &s.cloned[i]
 		}
 		if !s.keys.none() {
-			ref := Ref{Gen: s.gen, Seq: sim.nextSeq()}
-			if err := s.keys.prepare(v, m, flags, ref, sim.evictBelow(), i, &p.keyPlan); err != nil {
+			if err := s.prepareKeys(&sim, v, m, &p, i); err != nil {
 				return batchErr(i, err)
 			}
 		}

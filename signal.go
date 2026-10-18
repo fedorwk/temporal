@@ -111,6 +111,8 @@ func (c *changeSignal) wakeWaiters() {
 	}
 }
 
+// takeWaiters closes and forgets the WaitWatermark channel, if any, and
+// clears the waiting flag. The channel is closed after mu is released.
 func (c *changeSignal) takeWaiters() {
 	c.mu.Lock()
 	wake := c.wmWait

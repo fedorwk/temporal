@@ -152,6 +152,51 @@ func ExampleSubscription_Next() {
 	// 4 <nil>
 }
 
+// A non-blocking reader drains a subscription after each wake-up until a read
+// finds nothing new. One wake-up can stand for several changes, here a
+// watermark advance and a close, which are reported one read at a time.
+func ExampleSubscription_TryRead() {
+	s, _ := temporal.New(temporal.Config[int]{Capacity: 8})
+	sub, _ := s.Subscribe(temporal.SubscribeOptions{Start: temporal.StartOldest(), WatermarkUpdates: true})
+	defer sub.Close()
+
+	var buf []temporal.Entry[int]
+	drain := func() {
+		<-sub.Wake() // in a real loop: one case of a select over several sources
+		for {
+			var u temporal.Update
+			var err error
+			buf, u, err = sub.TryRead(buf[:0], 0)
+			switch {
+			case err != nil:
+				fmt.Println("stop:", err)
+				return
+			case u.Records == 0 && !u.WatermarkAdvanced:
+				fmt.Println("idle: wait on Wake")
+				return
+			}
+			if u.WatermarkAdvanced {
+				fmt.Printf("records=%d watermark=+%d\n", u.Records, u.State.Watermark-ns)
+			} else {
+				fmt.Printf("records=%d\n", u.Records)
+			}
+		}
+	}
+
+	s.Append(1, temporal.InputMeta{EventTime: ns + 1})
+	s.Append(2, temporal.InputMeta{EventTime: ns + 2})
+	drain()
+
+	s.SetWatermark(ns + 2)
+	s.Close()
+	drain()
+	// Output:
+	// records=2
+	// idle: wait on Wake
+	// records=0 watermark=+2
+	// stop: temporal: series closed
+}
+
 // deriveNotional is a complete derive loop: it maps each trade to its notional
 // value, appends each batch's outputs atomically, advances a checkpoint only
 // after the append succeeded, and forwards the source watermark once it has
@@ -174,8 +219,8 @@ func deriveNotional(
 	out := make([]temporal.Input[int64], 0, 256)
 	results := make([]temporal.AppendResult, 0, 256)
 	for {
-		var state temporal.SourceState
-		in, state, err = sub.NextState(ctx, in[:0], 256)
+		var u temporal.Update
+		in, u, err = sub.Read(ctx, in[:0], 256)
 		if err != nil {
 			// ctx done, ErrClosed, ErrReset (source cleared) or *LagError
 			// (fell behind retention): stop, then rebuild from the checkpoint.
@@ -195,15 +240,15 @@ func deriveNotional(
 			last := in[len(in)-1].Meta.Ref
 			*checkpoint = temporal.Cursor{Gen: last.Gen, Next: last.Seq + 1} // persist externally if needed
 		}
-		if checkpoint.Next == state.Newest.Seq+1 {
+		if checkpoint.Next == u.State.Newest.Seq+1 {
 			// Caught up: every source record up to the watermark is processed.
-			dst.SetWatermark(state.Watermark)
+			dst.SetWatermark(u.State.Watermark)
 		}
 	}
 }
 
-// A derived series maintained by a loop the caller owns, using NextState.
-func ExampleSubscription_NextState() {
+// A derived series maintained by a loop the caller owns, using Read.
+func ExampleSubscription_Read() {
 	raw, _ := temporal.New(temporal.Config[Trade]{Capacity: 1024})
 	notional, _ := temporal.New(temporal.Config[int64]{Capacity: 1024, TimeIndex: temporal.TimeIndexBTree})
 

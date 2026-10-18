@@ -172,8 +172,7 @@ func (s *Series[T]) appendLocked(v *T, m *InputMeta) (AppendResult, error) {
 		v = &c
 	}
 	if !s.keys.none() {
-		ref := Ref{Gen: s.gen, Seq: s.adm.nextSeq()}
-		if err := s.keys.prepare(v, m, flags, ref, s.adm.evictBelow(), 0, &p.keyPlan); err != nil {
+		if err := s.prepareKeys(&s.adm, v, m, &p, 0); err != nil {
 			s.n.rejected++
 			return AppendResult{}, err
 		}
@@ -184,6 +183,14 @@ func (s *Series[T]) appendLocked(v *T, m *InputMeta) (AppendResult, error) {
 	res := s.commit(v, m, p, 0)
 	s.applyTime()
 	return res, nil
+}
+
+// prepareKeys runs the key indexes' prepare for one item against a: s.adm for
+// Append, the batch copy for AppendBatch, so both see the Seq the item would
+// get and the rows its admission would evict.
+func (s *Series[T]) prepareKeys(a *admission, v *T, m *InputMeta, p *itemPlan, pos int) error {
+	ref := Ref{Gen: s.gen, Seq: a.nextSeq()}
+	return s.keys.prepare(v, m, p.flags, ref, a.evictBelow(), pos, &p.keyPlan)
 }
 
 // commitDrop records a dropped item: no Seq is consumed and no index changes.
@@ -209,7 +216,8 @@ func (s *Series[T]) applyTime() {
 	s.insKeys = s.insKeys[:0]
 }
 
-// commit admits one prepared item (admission push and observe) and stores it. It must not call user code.
+// commit admits one prepared item (admission push and observe) and stores it.
+// It must not call user code.
 func (s *Series[T]) commit(v *T, m *InputMeta, p itemPlan, pos int) AppendResult {
 	seq, evicted := s.adm.push()
 	s.adm.observe(m)
@@ -279,9 +287,7 @@ func (s *Series[T]) Clear() error {
 	if s.time != nil {
 		s.time.Clear()
 	}
-	if !s.keys.none() {
-		s.keys.reset()
-	}
+	s.keys.reset()
 	s.adm.reset()
 	s.env = envelope{}
 	s.watermark = MinTimestamp

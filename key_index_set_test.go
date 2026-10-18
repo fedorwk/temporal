@@ -14,9 +14,9 @@ type keysFixture struct {
 }
 
 func newKeysFixture(t *testing.T, list ...Index[trade]) *keysFixture {
-	r := newRing[trade](8)
+	r := newMetaRing(8)
 	f := &keysFixture{t: t, x: newKeyIndexes(list)}
-	f.x.bind(nil, &r.metaRing, 8)
+	f.x.bind(nil, &r, 8)
 	return f
 }
 
@@ -154,6 +154,33 @@ func TestKeyIndexes_CommitEvictReset(t *testing.T) {
 	f.x.reset()
 	if st := f.x.stats(); st[0].Keys != 0 || st[1].Keys != 0 {
 		t.Fatalf("after reset: %+v", st)
+	}
+}
+
+// §14.1: check verifies the indexes against the retained rows it is given.
+func TestKeyIndexes_Check(t *testing.T) {
+	ids := NewUniqueIndex("id", byID, ConflictDrop)
+	multi := NewMultiIndex("sym", bySymbol)
+	f := newKeysFixture(t, ids, multi)
+	for seq := Seq(1); seq <= 3; seq++ {
+		f.store(int(seq), "X", seq)
+	}
+	if err := f.x.check(bounds{oldest: 1, newest: 3}); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.x.check(bounds{oldest: 2, newest: 3}); err == nil {
+		t.Fatal("seq 1 is indexed but not retained: want an error")
+	}
+	f.x.evict(0, 1)
+	if err := f.x.check(bounds{oldest: 2, newest: 3}); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.x.check(bounds{}); err == nil {
+		t.Fatal("rows indexed in an empty series: want an error")
+	}
+	multi.indexed.set(0) // a non-retained slot marked indexed
+	if err := f.x.check(bounds{oldest: 2, newest: 3}); err == nil {
+		t.Fatal("corrupt multi index: want an error")
 	}
 }
 

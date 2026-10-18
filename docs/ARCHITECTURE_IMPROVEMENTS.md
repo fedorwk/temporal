@@ -11,7 +11,7 @@ Vocabulary: a **module** is anything with an interface and an implementation. It
 | 1 | One admission state for Append and AppendBatch | Strong · **done (S13-01)** | series.go, batch.go, ring.go |
 | 2 | A change-signal module for Series wake-ups | Strong · **done (S13-02)** | subscription.go, watermark.go, series.go, batch.go |
 | 3 | Let the key-index set own its transaction protocol | Worth exploring · **done (S13-03)** | key_index.go, series.go, batch.go |
-| 4 | Narrow the Subscription read interface | Worth exploring | subscription.go, example_test.go, README.md |
+| 4 | Narrow the Subscription read interface | Worth exploring · **done (S13-04)** | subscription.go, example_test.go, README.md |
 | 5 | One status-precedence step for event-time point reads | Speculative | query_time.go, watermark.go, query_batch.go |
 
 **Top recommendation: 1.** P-02 is the library's central write-path promise, and today it depends on two copies of the same rules that nothing forces to agree. Folding them into one value makes that equivalence structural, removes the most parameters, and sets up candidate 3. Candidate 2 is a close second if the next feature touches wake-ups again.
@@ -61,7 +61,7 @@ prepareBatch ──► switch / locals / trk    prepareBatch ─┴─► admiss
 
 **Strength:** Strong · in-process · hot spot (4 of the last 6 commits)
 
-**Status:** Done, see DECISIONS S13-02. `signal.go` holds `changeSignal`: writers call `records()`, `watermark()` or `closed()` after unlocking, and WaitWatermark takes its channel from `watermarkWait()`. Three methods instead of one `fire(change)`, so the Append path inlines to the old notify loop; `dbgNotifies` moved into the module as `dbgFired`.
+**Status:** Done, see DECISIONS S13-02. `signal.go` holds `changeSignal`: writers call `records()`, `watermark()` or `closed()` after unlocking, and WaitWatermark takes its channel from `watermarkWait()`. Three methods instead of one `fire(change)`, so the Append path inlines to the old notify loop; `dbgNotifies` moved into the module as `dbgFired` instead of going away; S13-02 says why.
 
 **Files:** `subscription.go` (`notify`, `notifyWatermark`, `subs`), `watermark.go` (`wmWait`, `takeWatermarkWaiters`), `series.go` (`Clear`, `CloseWithError`), `batch.go`
 
@@ -94,7 +94,7 @@ Each phase-5 feature (WaitWatermark, WatermarkUpdates, CloseWithError) had to ed
 
 **Strength:** Worth exploring · in-process
 
-**Status:** Done, see DECISIONS S13-03. `key_index_set.go` holds `keyIndexes[T]` (`prepare`, `beginBatch`/`endBatch`, `commit`, `drop`, `evict`, `reset`); the batch overlay moved from `Index[T]` to the internal `conflictIndex` that only `UniqueIndex` implements, and the set is tested without a Series.
+**Status:** Done, see DECISIONS S13-03. `key_index_set.go` holds `keyIndexes[T]` (`prepare`, `beginBatch`/`endBatch`, `commit`, `drop`, `evict`, `reset`); the batch overlay moved from `Index[T]` to the internal `conflictIndex` that only `UniqueIndex` implements, and the set, including its invariant check, is tested without a Series. The Series calls 7 write-protocol methods rather than four; S13-03 says why.
 
 **Files:** `key_index.go` (`Index[T]`), `series.go` (`prepareIndexes`, `commitDrop`, `commit`), `batch.go` (`prepareBatch`)
 
@@ -115,6 +115,8 @@ Each phase-5 feature (WaitWatermark, WatermarkUpdates, CloseWithError) had to ed
 ## 4. Narrow the Subscription read interface
 
 **Strength:** Worth exploring · in-process · hot spot (phase 5)
+
+**Status:** Done, see DECISIONS S13-04. `Read`/`TryRead` return `([]Entry[T], Update, error)` with `Update{State, Records, WatermarkAdvanced}`; `NextState` and `TryNextState` were removed (breaking; gotrade is pinned and migrates on its next bump). `Next`, `TryNext`, `All` and the Seek behaviour are unchanged, and the drain rule is now `Records == 0 && !WatermarkAdvanced`.
 
 **Files:** `subscription.go`, `example_test.go` (derive loop), `README.md`
 

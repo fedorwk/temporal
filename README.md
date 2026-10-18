@@ -30,7 +30,7 @@ single store you get:
 It is a library, not a service: no goroutines of its own, no persistence, no
 network. Derived series (bars, indicators) are loops you own; the library
 provides the one primitive that is hard to build from outside
-(`Subscription.NextState`).
+(`Subscription.Read`).
 
 ### Design in one paragraph
 
@@ -221,9 +221,9 @@ it).
 |---|---|
 | `Subscribe(SubscribeOptions) (*Subscription[T], error)` | `Start`: `StartNext()` (default), `StartOldest()`, `StartAt(ref)`. `OnLag`: `LagFail` or `LagSkip`. `WatermarkUpdates`: also wake and return on watermark advances. |
 | `Next(ctx, dst, limit)` | Block until records are available. |
-| `NextState(ctx, dst, limit)` | `Next` plus a `SourceState` read under the same lock. |
+| `Read(ctx, dst, limit)` | `Next` plus an `Update`: the `SourceState` read under the same lock, the number of records appended, and whether the watermark advanced. |
 | `All(ctx, limit)` | `iter.Seq2[Entry[T], error]` over `Next`; ends silently after a clean close, yields the error otherwise. |
-| `TryNext(dst, limit)`, `TryNextState(dst, limit)`, `Wake()` | Non-blocking variants and a coalesced wake channel for `select` loops over several subscriptions. |
+| `TryNext(dst, limit)`, `TryRead(dst, limit)`, `Wake()` | Non-blocking variants and a coalesced wake channel for `select` loops over several subscriptions. After a wake-up, call `TryRead` until `u.Records == 0 && !u.WatermarkAdvanced`. |
 | `Seek(StartFrom)`, `Cursor()`, `Skipped()`, `Close()` | Reposition, inspect, release. |
 
 A subscription must be used by one goroutine at a time.
@@ -355,7 +355,8 @@ for {
 ```
 
 `LagSkip` instead jumps ahead automatically and counts what it skipped in
-`sub.Skipped()`. For `select`-based loops use `Wake()` with `TryNext`.
+`sub.Skipped()`. For `select`-based loops use `Wake()` with `TryRead`
+(`ExampleSubscription_TryRead`).
 
 ### Values that contain slices: Clone
 
@@ -421,11 +422,11 @@ e, st := s.AsOf(t)
 
 ### Derived series (bars, indicators)
 
-Derived series are a loop you own. `NextState` returns the new records
-together with the source's newest record and watermark, captured in one
-atomic read, so you know exactly when you have caught up. With
-`WatermarkUpdates` it also returns, with no records, when only the watermark
-moved:
+Derived series are a loop you own. `Read` returns the new records together
+with an `Update` whose `State` holds the source's newest record and
+watermark, captured in one atomic read, so you know exactly when you have
+caught up. With `WatermarkUpdates` it also returns, with no records and
+`u.WatermarkAdvanced` set, when only the watermark moved:
 
 ```go
 func deriveNotional(ctx context.Context, src *temporal.Series[Trade], dst *temporal.Series[int64]) error {
@@ -442,8 +443,8 @@ func deriveNotional(ctx context.Context, src *temporal.Series[Trade], dst *tempo
 	var res []temporal.AppendResult
 	var last temporal.Ref
 	for {
-		var st temporal.SourceState
-		in, st, err = sub.NextState(ctx, in[:0], 256)
+		var u temporal.Update
+		in, u, err = sub.Read(ctx, in[:0], 256)
 		if err != nil {
 			return err // ctx done, ErrClosed, ErrReset, or *LagError
 		}
@@ -460,8 +461,8 @@ func deriveNotional(ctx context.Context, src *temporal.Series[Trade], dst *tempo
 			}
 			last = in[len(in)-1].Meta.Ref
 		}
-		if last == st.Newest {
-			dst.SetWatermark(st.Watermark) // caught up: forward completeness
+		if last == u.State.Newest {
+			dst.SetWatermark(u.State.Watermark) // caught up: forward completeness
 		}
 	}
 }
@@ -469,7 +470,7 @@ func deriveNotional(ctx context.Context, src *temporal.Series[Trade], dst *tempo
 
 Because the loop is yours, so are goroutine lifetime, retries, checkpointing
 and panic policy. The runnable version with a persisted checkpoint is
-`ExampleSubscription_NextState` in `example_test.go`.
+`ExampleSubscription_Read` in `example_test.go`.
 
 ## Concurrency and ownership
 

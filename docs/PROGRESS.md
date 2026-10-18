@@ -18,6 +18,7 @@ Plan: `IMPLEMENTATION_PLAN.md`. Spec: `temporal_series_requirements.md`. Decisio
 | 10 Verification hardening | done |
 | 11 Benchmarks, allocation acceptance, docs, DoD audit | done |
 | 12 (optional) Trace replay fixtures | needs captured feed data |
+| 13 Architecture improvements (ARCHITECTURE_IMPROVEMENTS 1-4) | done (S13-01..S13-04) |
 
 ## Session 1 — Foundations and ring
 
@@ -331,7 +332,7 @@ Done:
 Tests:
 - Panic safety: `TestAppend_ClonePanicNoStateChange`, `TestIndex_ExtractorPanicNoStateChange`, `TestAppendBatch_PanicNoStateChange` (panic value propagates; Stats exactly unchanged; invariants hold; next append succeeds; scratch cleared), new `TestAppendBatch_PanicEndsPendingOverlay`.
 - Model/fuzz: the panicking extractor stays in random runs; panics are recovered by the run loop (`catchPanic`) and compared with the model's `modelPanic`.
-- `TestSubscription_NextState`, `ExampleSubscription_NextState`.
+- `TestSubscription_NextState`, `ExampleSubscription_NextState` (replaced by `TestSubscription_Read`, `ExampleSubscription_Read` in S13-04).
 - Mutation checks: dropping the deferred clone-scratch clear, the deferred `endBatch`, or the deferred unlock in Append each fail tests (the last one deadlocks, as a recovered panic would in production).
 
 ## Post-plan change — TimeIndexOrdered (S12-04)
@@ -351,3 +352,20 @@ Tests:
 - `allModes` now includes TimeIndexOrdered: the model property test, fuzz target, long runs, batch equivalence, race stress and allocation tests run it (`withMode` sets the required late policy); `TestModeEquivalence` compares None with Ordered under LateReject.
 - Mutation checks: seven of eight planted bugs in the ordered index (tie handling in either search, the exclusive Range bound, the Descend start, the lower search bound, Max, Delete bookkeeping) fail the tests; the surviving one (Before searching `> (ts, 0)` instead of `>= (ts, 0)`) is equivalent because Seq 0 is never assigned. In the O(1) `Apply` path, wrong bound arithmetic and a missed empty-index reset both fail the normal-build tests.
 - Benchmarks re-run for all three modes (`bench/`, BENCHMARKS.md); every append benchmark fails if the ordered stream has a rejected record.
+
+## Session 13 — Architecture improvements (S13-01..S13-04)
+
+From the 2026-10-16 architecture review (`ARCHITECTURE_IMPROVEMENTS.md`, candidates 1-4; candidate 5 not done).
+
+Done:
+- One admission state (S13-01): `admission.go` holds the bounds, the late tracker and the SourceSeq tracker with their rules (`check`, `nextSeq`, `evictBelow`, `push`, `observe`, `reset`); `commit` advances `s.adm` and `prepareBatch` runs the same calls on a copy. `hasObserved`, the tracker's `valid` flag and `bounds.reset` are gone.
+- One change-signal module (S13-02): `signal.go` holds `changeSignal` (subscriber list, WaitWatermark channel, `records()`/`watermark()`/`closed()`); `notify`, `notifyWatermark` and `takeWatermarkWaiters` are gone, and `dbgNotifies` became `dbgFired`.
+- The key-index set (S13-03): `key_index_set.go` holds `keyIndexes[T]` and the S6-05 precedence; the batch overlay and drop counting moved to the internal `conflictIndex`, which only `UniqueIndex` implements; indexes reach slots through `*metaRing`.
+- One subscription read step (S13-04, breaking): `Read`/`TryRead` return an `Update{State, Records, WatermarkAdvanced}`; `NextState` and `TryNextState` are removed. README and `doc.go` updated.
+
+Tests:
+- Admission: `TestAdmission_Check`, `TestAdmission_BoundsAndEviction`, `TestAdmission_SeqExhausted`, `TestAdmission_CopyIsIndependent`; `TestBounds_EmptyAndReset` became `TestBounds_EmptyAndRefs`.
+- Change signal: `TestChangeSignal_WhoWakes`, `TestChangeSignal_Coalesces`, `TestChangeSignal_WatermarkWaitChannel`, `TestChangeSignal_AddRemove`.
+- Key-index set: `TestKeyIndexes_Precedence`, `TestKeyIndexes_RejectFailsTheItem`, `TestKeyIndexes_EvictBelowFreesKeys`, `TestKeyIndexes_BatchOverlay`, `TestKeyIndexes_DropCountsTheDecidingIndexes`, `TestKeyIndexes_CommitEvictReset`, `TestKeyIndexes_Check`, `TestKeyIndexes_None`.
+- Read step: `TestSubscription_Read`, `TestSubscription_TryRead`, `TestUpdate_WatermarkAdvancedOnce`, `TestUpdate_WatermarkAdvancedWithoutUpdates`, `TestUpdate_RecordsAppended`, `TestUpdate_ZeroOnError`, `ExampleSubscription_Read`, `ExampleSubscription_TryRead`.
+- The model, fuzz and allocation tests are unchanged and stay the oracle; benchmarks per step are recorded in the S13 rows of `DECISIONS.md`.
