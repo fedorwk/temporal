@@ -55,25 +55,19 @@ func (x *keyIndexes[T]) bind(s *Series[T], slots *metaRing, capacity int) {
 	}
 }
 
-// prepare runs P-03 step 6 for the item at batch position pos: each index in
-// Config.Indexes order extracts the key and decides, without changing what is
-// committed. Rows below evictBelow count as evicted. Any error fails the item;
-// otherwise any Drop drops it. The combined decision goes to kp: the reported
-// holder comes from the first index that decided Drop, else from the first
-// that decided Replace or KeepFirst (S6-05). Inside a batch, a kept item's
-// keys are staged so that later items see them. A panic in an extractor
-// propagates; nothing has changed then.
+// prepare runs P-03 step 6 for the item at batch position pos, which will be
+// stored as ref with the series-set flags: each index in Config.Indexes order
+// extracts the key and decides, without changing what is committed. Rows below
+// evictBelow count as evicted. Any error fails the item; otherwise any Drop
+// drops it. The combined decision goes to kp: the reported holder comes from
+// the first index that decided Drop, else from the first that decided Replace
+// or KeepFirst (S6-05). Inside a batch, a kept item's keys are staged so that
+// later items see them. A panic in an extractor propagates; nothing has
+// changed then.
 func (x *keyIndexes[T]) prepare(v *T, m *InputMeta, flags Flags, ref Ref, evictBelow Seq, pos int, kp *keyPlan) error {
 	e := x.xe
 	e.Value = *v
-	e.Meta = Meta{
-		EventTime:   m.EventTime,
-		ReceiveTime: m.ReceiveTime,
-		SourceSeq:   m.SourceSeq,
-		SourceEpoch: m.SourceEpoch,
-		Flags:       m.Flags | flags,
-		Ref:         ref,
-	}
+	e.Meta = m.meta(flags, ref)
 	defer func() { *e = Entry[T]{} }()
 
 	*kp = keyPlan{}

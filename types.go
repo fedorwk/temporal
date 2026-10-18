@@ -85,6 +85,19 @@ type InputMeta struct {
 	Flags       Flags // adapter bits (0-15) only
 }
 
+// meta is the Meta the record gets when stored as ref with the series-set
+// flags.
+func (m *InputMeta) meta(flags Flags, ref Ref) Meta {
+	return Meta{
+		EventTime:   m.EventTime,
+		ReceiveTime: m.ReceiveTime,
+		SourceSeq:   m.SourceSeq,
+		SourceEpoch: m.SourceEpoch,
+		Flags:       m.Flags | flags,
+		Ref:         ref,
+	}
+}
+
 // Meta is the metadata of a stored record.
 type Meta struct {
 	EventTime   Timestamp
