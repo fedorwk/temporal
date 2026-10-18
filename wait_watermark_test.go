@@ -160,24 +160,19 @@ func TestAllocs_SetWatermarkNoWaiters(t *testing.T) {
 	}
 }
 
-// nextState runs NextState on its own goroutine.
-func nextState(sub *Subscription[int]) <-chan struct {
+// readResult is what one Read returned.
+type readResult struct {
 	got []Entry[int]
-	st  SourceState
+	u   Update
 	err error
-} {
-	ch := make(chan struct {
-		got []Entry[int]
-		st  SourceState
-		err error
-	}, 1)
+}
+
+// nextState runs Read on its own goroutine.
+func nextState(sub *Subscription[int]) <-chan readResult {
+	ch := make(chan readResult, 1)
 	go func() {
-		got, st, err := sub.NextState(context.Background(), nil, 0)
-		ch <- struct {
-			got []Entry[int]
-			st  SourceState
-			err error
-		}{got, st, err}
+		got, u, err := sub.Read(context.Background(), nil, 0)
+		ch <- readResult{got, u, err}
 	}()
 	return ch
 }
@@ -190,9 +185,9 @@ func TestSubscription_WatermarkUpdates(t *testing.T) {
 	ctx := context.Background()
 
 	mustAppend(t, s, 1, at(10))
-	got, st, err := sub.NextState(ctx, nil, 0)
-	if err != nil || len(got) != 1 || st.Watermark != MinTimestamp {
-		t.Fatalf("records: %v %+v %v", values(got), st, err)
+	got, u, err := sub.Read(ctx, nil, 0)
+	if err != nil || len(got) != 1 || u.State.Watermark != MinTimestamp || u.WatermarkAdvanced {
+		t.Fatalf("records: %v %+v %v", values(got), u, err)
 	}
 
 	ch := nextState(sub)
@@ -204,7 +199,7 @@ func TestSubscription_WatermarkUpdates(t *testing.T) {
 	s.SetWatermark(10)
 	select {
 	case r := <-ch:
-		if r.err != nil || len(r.got) != 0 || r.st.Watermark != 10 || r.st.Newest != (Ref{1, 1}) {
+		if r.err != nil || len(r.got) != 0 || r.u.State.Watermark != 10 || r.u.State.Newest != (Ref{1, 1}) || !r.u.WatermarkAdvanced || r.u.Records != 0 {
 			t.Fatalf("update: %+v", r)
 		}
 	case <-time.After(5 * time.Second):
@@ -219,9 +214,9 @@ func TestSubscription_WatermarkUpdates(t *testing.T) {
 	// Records returned together with an advance report it; it is not repeated.
 	mustAppend(t, s, 2, at(20))
 	s.SetWatermark(20)
-	got, st, err = sub.NextState(ctx, nil, 0)
-	if err != nil || len(got) != 1 || st.Watermark != 20 {
-		t.Fatalf("record with advance: %v %+v %v", values(got), st, err)
+	got, u, err = sub.Read(ctx, nil, 0)
+	if err != nil || len(got) != 1 || u.State.Watermark != 20 || !u.WatermarkAdvanced || u.Records != 1 {
+		t.Fatalf("record with advance: %v %+v %v", values(got), u, err)
 	}
 	if got, err := sub.TryNext(nil, 0); err != nil || len(got) != 0 {
 		t.Fatalf("TryNext after record: %v %v", values(got), err)
@@ -237,11 +232,11 @@ func TestSubscription_WatermarkUpdatesBeforeClose(t *testing.T) {
 	s.Close()
 
 	ctx := context.Background()
-	got, st, err := sub.NextState(ctx, nil, 0)
-	if err != nil || len(got) != 1 || st.Watermark != MaxTimestamp {
-		t.Fatalf("drain: %v %+v %v", values(got), st, err)
+	got, u, err := sub.Read(ctx, nil, 0)
+	if err != nil || len(got) != 1 || u.State.Watermark != MaxTimestamp || !u.WatermarkAdvanced {
+		t.Fatalf("drain: %v %+v %v", values(got), u, err)
 	}
-	if _, _, err := sub.NextState(ctx, nil, 0); err != ErrClosed {
+	if _, _, err := sub.Read(ctx, nil, 0); err != ErrClosed {
 		t.Fatalf("after drain: %v", err)
 	}
 }
@@ -267,13 +262,168 @@ func TestSubscription_WatermarkUpdatesSeek(t *testing.T) {
 	sub := mustSubscribe(t, s, SubscribeOptions{WatermarkUpdates: true})
 	s.SetWatermark(10)
 	ctx := context.Background()
-	if _, st, err := sub.NextState(ctx, nil, 0); err != nil || st.Watermark != 10 {
-		t.Fatalf("first: %+v %v", st, err)
+	if _, u, err := sub.Read(ctx, nil, 0); err != nil || u.State.Watermark != 10 || !u.WatermarkAdvanced {
+		t.Fatalf("first: %+v %v", u, err)
 	}
 	if err := sub.Seek(StartNext()); err != nil {
 		t.Fatal(err)
 	}
-	if _, st, err := sub.NextState(ctx, nil, 0); err != nil || st.Watermark != 10 {
-		t.Fatalf("after Seek: %+v %v", st, err)
+	if _, u, err := sub.Read(ctx, nil, 0); err != nil || u.State.Watermark != 10 || !u.WatermarkAdvanced {
+		t.Fatalf("after Seek: %+v %v", u, err)
+	}
+}
+
+// S13-04: each watermark advance is reported once, alone or with records, and
+// a drain loop over TryRead stops on a read that reports neither.
+func TestUpdate_WatermarkAdvancedOnce(t *testing.T) {
+	s := mustNew(t, Config[int]{Capacity: 8})
+	sub := mustSubscribe(t, s, SubscribeOptions{Start: StartOldest(), WatermarkUpdates: true})
+	idle := func(step string) {
+		t.Helper()
+		if got, u, err := sub.TryRead(nil, 0); err != nil || len(got) != 0 || u.Records != 0 || u.WatermarkAdvanced {
+			t.Fatalf("%s: want idle, got %v %+v %v", step, values(got), u, err)
+		}
+	}
+	idle("start")
+
+	s.SetWatermark(5) // alone
+	if _, u, err := sub.TryRead(nil, 0); err != nil || u.Records != 0 || !u.WatermarkAdvanced || u.State.Watermark != 5 {
+		t.Fatalf("alone: %+v %v", u, err)
+	}
+	idle("after alone")
+
+	mustAppend(t, s, 1, at(10)) // records without an advance
+	if _, u, err := sub.TryRead(nil, 0); err != nil || u.Records != 1 || u.WatermarkAdvanced {
+		t.Fatalf("records only: %+v %v", u, err)
+	}
+	idle("after records")
+
+	mustAppend(t, s, 2, at(20)) // records with an advance
+	s.SetWatermark(20)
+	if _, u, err := sub.TryRead(nil, 0); err != nil || u.Records != 1 || !u.WatermarkAdvanced {
+		t.Fatalf("records with advance: %+v %v", u, err)
+	}
+	idle("after records with advance")
+
+	if err := sub.Seek(StartNext()); err != nil { // forgets what was reported
+		t.Fatal(err)
+	}
+	if _, u, err := sub.TryRead(nil, 0); err != nil || u.Records != 0 || !u.WatermarkAdvanced || u.State.Watermark != 20 {
+		t.Fatalf("after Seek: %+v %v", u, err)
+	}
+	idle("after Seek")
+
+	// One wake-up for an advance and a close: the advance comes first, then
+	// the close error.
+	s.SetWatermark(30)
+	s.Close()
+	<-sub.Wake()
+	if _, u, err := sub.TryRead(nil, 0); err != nil || !u.WatermarkAdvanced || u.State.Watermark != 30 {
+		t.Fatalf("advance before close: %+v %v", u, err)
+	}
+	if _, u, err := sub.TryRead(nil, 0); err != ErrClosed || u != (Update{}) {
+		t.Fatalf("close: %+v %v", u, err)
+	}
+}
+
+// Without WatermarkUpdates, an empty read never reports an advance; the next
+// records carry it.
+func TestUpdate_WatermarkAdvancedWithoutUpdates(t *testing.T) {
+	s := mustNew(t, Config[int]{Capacity: 8})
+	sub := mustSubscribe(t, s, SubscribeOptions{Start: StartOldest()})
+	s.SetWatermark(10)
+	if _, u, err := sub.TryRead(nil, 0); err != nil || u.WatermarkAdvanced || u.State.Watermark != 10 {
+		t.Fatalf("empty: %+v %v", u, err)
+	}
+	mustAppend(t, s, 1, at(20))
+	if _, u, err := sub.TryRead(nil, 0); err != nil || u.Records != 1 || !u.WatermarkAdvanced {
+		t.Fatalf("records: %+v %v", u, err)
+	}
+	mustAppend(t, s, 2, at(30))
+	if _, u, err := sub.TryRead(nil, 0); err != nil || u.Records != 1 || u.WatermarkAdvanced {
+		t.Fatalf("records again: %+v %v", u, err)
+	}
+}
+
+// Records counts what this read appended, not len(dst).
+func TestUpdate_RecordsAppended(t *testing.T) {
+	s := mustNew(t, Config[int]{Capacity: 8})
+	sub := mustSubscribe(t, s, SubscribeOptions{Start: StartOldest()})
+	for v := range 3 {
+		mustAppend(t, s, v, at(Timestamp(v+1)))
+	}
+	dst := make([]Entry[int], 2, 8)
+	got, u, err := sub.TryRead(dst, 2)
+	if err != nil || len(got) != 4 || u.Records != 2 {
+		t.Fatalf("first: len %d %+v %v", len(got), u, err)
+	}
+	got, u, err = sub.Read(context.Background(), got, 0)
+	if err != nil || len(got) != 5 || u.Records != 1 {
+		t.Fatalf("second: len %d %+v %v", len(got), u, err)
+	}
+}
+
+// The Update is zero on every error, from Read and TryRead alike.
+func TestUpdate_ZeroOnError(t *testing.T) {
+	ctx := context.Background()
+	cancelled, cancel := context.WithCancel(ctx)
+	cancel()
+	cases := []struct {
+		name  string
+		setup func(t *testing.T) (*Subscription[int], context.Context)
+	}{
+		{"reset", func(t *testing.T) (*Subscription[int], context.Context) {
+			s := mustNew(t, Config[int]{Capacity: 4})
+			sub := mustSubscribe(t, s, SubscribeOptions{Start: StartOldest()})
+			mustAppend(t, s, 1, at(1))
+			s.Clear()
+			return sub, ctx
+		}},
+		{"lag", func(t *testing.T) (*Subscription[int], context.Context) {
+			s := mustNew(t, Config[int]{Capacity: 2})
+			sub := mustSubscribe(t, s, SubscribeOptions{Start: StartOldest(), OnLag: LagFail})
+			for v := range 4 {
+				mustAppend(t, s, v, at(Timestamp(v+1)))
+			}
+			return sub, ctx
+		}},
+		{"later generation", func(t *testing.T) (*Subscription[int], context.Context) {
+			s := mustNew(t, Config[int]{Capacity: 4})
+			mustAppend(t, s, 1, at(1))
+			return mustSubscribe(t, s, SubscribeOptions{Start: StartAt(Ref{Gen: 9, Seq: 1})}), ctx
+		}},
+		{"subscription closed", func(t *testing.T) (*Subscription[int], context.Context) {
+			s := mustNew(t, Config[int]{Capacity: 4})
+			sub := mustSubscribe(t, s, SubscribeOptions{Start: StartOldest()})
+			mustAppend(t, s, 1, at(1))
+			sub.Close()
+			return sub, ctx
+		}},
+		{"series closed", func(t *testing.T) (*Subscription[int], context.Context) {
+			s := mustNew(t, Config[int]{Capacity: 4})
+			sub := mustSubscribe(t, s, SubscribeOptions{WatermarkUpdates: true})
+			s.CloseWithError(errFeed)
+			return sub, ctx
+		}},
+		{"ctx done", func(t *testing.T) (*Subscription[int], context.Context) {
+			s := mustNew(t, Config[int]{Capacity: 4})
+			sub := mustSubscribe(t, s, SubscribeOptions{Start: StartOldest()})
+			mustAppend(t, s, 1, at(1))
+			return sub, cancelled
+		}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			sub, ctx := c.setup(t)
+			if _, u, err := sub.Read(ctx, nil, 0); err == nil || u != (Update{}) {
+				t.Fatalf("Read: %+v %v", u, err)
+			}
+			if ctx.Err() != nil {
+				return // TryRead takes no context
+			}
+			if _, u, err := sub.TryRead(nil, 0); err == nil || u != (Update{}) {
+				t.Fatalf("TryRead: %+v %v", u, err)
+			}
+		})
 	}
 }
