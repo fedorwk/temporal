@@ -61,7 +61,7 @@ prepareBatch ──► switch / locals / trk    prepareBatch ─┴─► admiss
 
 **Strength:** Strong · in-process · hot spot (4 of the last 6 commits)
 
-**Status:** Done, see DECISIONS S13-02. `signal.go` holds `changeSignal`: writers call `records()`, `watermark()` or `closed()` after unlocking, and WaitWatermark takes its channel from `watermarkWait()`. Three methods instead of one `fire(change)`, so the Append path inlines to the old notify loop; `dbgNotifies` moved into the module as `dbgFired`.
+**Status:** Done, see DECISIONS S13-02. `signal.go` holds `changeSignal`: writers call `records()`, `watermark()` or `closed()` after unlocking, and WaitWatermark takes its channel from `watermarkWait()`. Three methods instead of one `fire(change)`, so the Append path inlines to the old notify loop; `dbgNotifies` moved into the module as `dbgFired` instead of going away; S13-02 says why.
 
 **Files:** `subscription.go` (`notify`, `notifyWatermark`, `subs`), `watermark.go` (`wmWait`, `takeWatermarkWaiters`), `series.go` (`Clear`, `CloseWithError`), `batch.go`
 
@@ -94,7 +94,7 @@ Each phase-5 feature (WaitWatermark, WatermarkUpdates, CloseWithError) had to ed
 
 **Strength:** Worth exploring · in-process
 
-**Status:** Done, see DECISIONS S13-03. `key_index_set.go` holds `keyIndexes[T]` (`prepare`, `beginBatch`/`endBatch`, `commit`, `drop`, `evict`, `reset`); the batch overlay moved from `Index[T]` to the internal `conflictIndex` that only `UniqueIndex` implements, and the set is tested without a Series.
+**Status:** Done, see DECISIONS S13-03. `key_index_set.go` holds `keyIndexes[T]` (`prepare`, `beginBatch`/`endBatch`, `commit`, `drop`, `evict`, `reset`); the batch overlay moved from `Index[T]` to the internal `conflictIndex` that only `UniqueIndex` implements, and the set is tested without a Series. The Series calls 7 write-protocol methods rather than four; S13-03 says why.
 
 **Files:** `key_index.go` (`Index[T]`), `series.go` (`prepareIndexes`, `commitDrop`, `commit`), `batch.go` (`prepareBatch`)
 

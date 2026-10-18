@@ -167,8 +167,8 @@ type readResult struct {
 	err error
 }
 
-// nextState runs Read on its own goroutine.
-func nextState(sub *Subscription[int]) <-chan readResult {
+// readAsync runs Read on its own goroutine.
+func readAsync(sub *Subscription[int]) <-chan readResult {
 	ch := make(chan readResult, 1)
 	go func() {
 		got, u, err := sub.Read(context.Background(), nil, 0)
@@ -190,7 +190,7 @@ func TestSubscription_WatermarkUpdates(t *testing.T) {
 		t.Fatalf("records: %v %+v %v", values(got), u, err)
 	}
 
-	ch := nextState(sub)
+	ch := readAsync(sub)
 	select {
 	case r := <-ch:
 		t.Fatalf("returned without a change: %+v", r)

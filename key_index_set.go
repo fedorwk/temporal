@@ -9,7 +9,7 @@ package temporal
 type keyIndexes[T any] struct {
 	list      []Index[T]
 	conflicts []conflictIndex // the indexes in list whose keys can conflict (unique)
-	xe        *Entry[T]       // the entry handed to extractors (S6-07); zeroed after use; nil until bind
+	xe        *Entry[T]       // handed to extractors (S6-07); zeroed after use; nil until bind
 	batch     bool            // between beginBatch and endBatch
 }
 

@@ -209,7 +209,8 @@ func (s *Series[T]) applyTime() {
 	s.insKeys = s.insKeys[:0]
 }
 
-// commit admits one prepared item (admission push and observe) and stores it. It must not call user code.
+// commit admits one prepared item (admission push and observe) and stores it.
+// It must not call user code.
 func (s *Series[T]) commit(v *T, m *InputMeta, p itemPlan, pos int) AppendResult {
 	seq, evicted := s.adm.push()
 	s.adm.observe(m)
@@ -279,9 +280,7 @@ func (s *Series[T]) Clear() error {
 	if s.time != nil {
 		s.time.Clear()
 	}
-	if !s.keys.none() {
-		s.keys.reset()
-	}
+	s.keys.reset()
 	s.adm.reset()
 	s.env = envelope{}
 	s.watermark = MinTimestamp
