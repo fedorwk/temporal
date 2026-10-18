@@ -15,28 +15,24 @@ type Extractor[T any, K comparable] func(e *Entry[T]) (key K, ok bool)
 // methods are unexported, so only this package can implement it. Create one
 // with NewUniqueIndex or NewMultiIndex. A handle binds to exactly one Series.
 //
-// All methods except indexName are called with the Series mutex held. The
+// All methods except indexName are called with the Series mutex held, through
+// the Series' keyIndexes set, which also drives the batch overlay of indexes
+// whose keys can conflict (conflictIndex, implemented by UniqueIndex). The
 // typed key of each prepared item stays in the index's own scratch, indexed by
 // batch position, so no key is boxed.
 type Index[T any] interface {
 	indexName() string
 	validate() error // ErrInvalidConfig for an unknown policy or nil extractor
 	isBound() bool
-	bind(s *Series[T], capacity int)
+	// bind attaches the index to s; slots maps a Seq to its ring slot.
+	bind(s *Series[T], slots *metaRing, capacity int)
 
 	// prepare extracts the key of the item at batch position pos and decides
 	// its outcome without mutating committed state. Rows with Seq < evictBelow
 	// count as evicted. It returns *ConflictError under ConflictReject; a
 	// panic in the extractor propagates to the caller.
 	prepare(e *Entry[T], evictBelow Seq, pos int) (decision, error)
-	// beginBatch, stage and endBatch maintain the overlay of keys claimed by
-	// earlier items of an AppendBatch (P-02).
-	beginBatch()
-	stage(pos int, seq Seq)
-	endBatch()
-
 	commit(slot int, seq Seq, pos int) // apply the prepared decision for pos
-	noteDropped(pos int)               // count a committed drop decided by this index
 	evict(slot int, seq Seq)
 	reset()
 	stats() IndexStats
@@ -54,7 +50,7 @@ const (
 	decDrop                           // ConflictDrop: the item is not stored
 )
 
-// decision is non-generic so the Series can combine decisions across indexes.
+// decision is non-generic so keyIndexes can combine decisions across indexes.
 type decision struct {
 	kind     decisionKind
 	existing Seq // current holder of the key for Replace, KeepFirst and Drop
@@ -77,10 +73,11 @@ func (b bitset) clearAll()      { clear(b) }
 type keyCore[T any, K comparable] struct {
 	name    string
 	fn      Extractor[T, K]
-	s       *Series[T]
-	keys    []K    // per slot: the key stored at commit
-	indexed bitset // per slot: the row is entered in this index
-	pkeys   []K    // per batch position: extracted key
+	s       *Series[T] // for lookups and checkLocked; nil until bound
+	slots   *metaRing  // Seq to slot, for the write path
+	keys    []K        // per slot: the key stored at commit
+	indexed bitset     // per slot: the row is entered in this index
+	pkeys   []K        // per batch position: extracted key
 	pdec    []decision
 }
 
@@ -94,8 +91,9 @@ func (c *keyCore[T, K]) validateCore() error {
 }
 func (c *keyCore[T, K]) isBound() bool { return c.s != nil }
 
-func (c *keyCore[T, K]) bindCore(s *Series[T], capacity int) {
+func (c *keyCore[T, K]) bindCore(s *Series[T], slots *metaRing, capacity int) {
 	c.s = s
+	c.slots = slots
 	c.keys = make([]K, capacity)
 	c.indexed = newBitset(capacity)
 	c.pkeys = make([]K, 1)
@@ -146,8 +144,8 @@ func (ix *UniqueIndex[T, K]) validate() error {
 	return ix.validateCore()
 }
 
-func (ix *UniqueIndex[T, K]) bind(s *Series[T], capacity int) {
-	ix.bindCore(s, capacity)
+func (ix *UniqueIndex[T, K]) bind(s *Series[T], slots *metaRing, capacity int) {
+	ix.bindCore(s, slots, capacity)
 	ix.m = make(map[K]Seq)
 }
 
@@ -195,6 +193,8 @@ func (ix *UniqueIndex[T, K]) prepare(e *Entry[T], evictBelow Seq, pos int) (deci
 	return d, nil
 }
 
+var _ conflictIndex = (*UniqueIndex[int, int])(nil)
+
 func (ix *UniqueIndex[T, K]) beginBatch() {
 	ix.batch = true
 	if ix.pending == nil {
@@ -231,7 +231,7 @@ func (ix *UniqueIndex[T, K]) commit(slot int, seq Seq, pos int) {
 			assertf(ix.m[ix.pkeys[pos]] == d.existing, "unique %q: replace holder %d, map has %d",
 				ix.name, d.existing, ix.m[ix.pkeys[pos]])
 		}
-		ix.indexed.unset(ix.s.ring.slot(d.existing))
+		ix.indexed.unset(ix.slots.slot(d.existing))
 		ix.replaced++
 	default:
 		if debugAssert {
@@ -330,7 +330,7 @@ func (ix *UniqueIndex[T, K]) Len() int {
 func (ix *UniqueIndex[T, K]) checkLocked() error {
 	s := ix.s
 	want := 0
-	for seq := s.b.oldest; !s.b.empty() && seq <= s.b.newest; seq++ {
+	for seq := s.adm.b.oldest; !s.adm.b.empty() && seq <= s.adm.b.newest; seq++ {
 		slot := s.ring.slot(seq)
 		if !ix.indexed.get(slot) {
 			continue
@@ -353,7 +353,7 @@ func (ix *UniqueIndex[T, K]) checkLocked() error {
 // countUnretainedIndexed counts indexed bits on slots that hold no retained row.
 func countUnretainedIndexed[T any](s *Series[T], indexed bitset) int {
 	retained := newBitset(s.cfg.capacity)
-	for seq := s.b.oldest; !s.b.empty() && seq <= s.b.newest; seq++ {
+	for seq := s.adm.b.oldest; !s.adm.b.empty() && seq <= s.adm.b.newest; seq++ {
 		retained.set(s.ring.slot(seq))
 	}
 	n := 0
@@ -402,8 +402,8 @@ func NewMultiIndex[T any, K comparable](name string, fn Extractor[T, K]) *MultiI
 
 func (ix *MultiIndex[T, K]) validate() error { return ix.validateCore() }
 
-func (ix *MultiIndex[T, K]) bind(s *Series[T], capacity int) {
-	ix.bindCore(s, capacity)
+func (ix *MultiIndex[T, K]) bind(s *Series[T], slots *metaRing, capacity int) {
+	ix.bindCore(s, slots, capacity)
 	ix.m = make(map[K]*postings)
 }
 
@@ -417,11 +417,6 @@ func (ix *MultiIndex[T, K]) prepare(e *Entry[T], _ Seq, pos int) (decision, erro
 	ix.pdec[pos] = d
 	return d, nil
 }
-
-func (ix *MultiIndex[T, K]) beginBatch()     {}
-func (ix *MultiIndex[T, K]) stage(int, Seq)  {}
-func (ix *MultiIndex[T, K]) endBatch()       {}
-func (ix *MultiIndex[T, K]) noteDropped(int) {}
 
 func (ix *MultiIndex[T, K]) commit(slot int, seq Seq, pos int) {
 	if ix.pdec[pos].kind != decInsert {
@@ -493,7 +488,7 @@ func (ix *MultiIndex[T, K]) Get(dst []Entry[T], k K, limit int, o Order) ([]Entr
 		return dst, ReadInfo{Status: StatusInvalid}
 	}
 	defer s.mu.Unlock()
-	info := ReadInfo{Status: StatusNotFound, Oldest: s.b.oldestRef(s.gen)}
+	info := ReadInfo{Status: StatusNotFound, Oldest: s.adm.b.oldestRef(s.gen)}
 	p := ix.m[k]
 	if p == nil {
 		return dst, info
@@ -557,7 +552,7 @@ func (ix *MultiIndex[T, K]) Keys() int {
 func (ix *MultiIndex[T, K]) checkLocked() error {
 	s := ix.s
 	want := map[K][]Seq{}
-	for seq := s.b.oldest; !s.b.empty() && seq <= s.b.newest; seq++ {
+	for seq := s.adm.b.oldest; !s.adm.b.empty() && seq <= s.adm.b.newest; seq++ {
 		if slot := s.ring.slot(seq); ix.indexed.get(slot) {
 			want[ix.keys[slot]] = append(want[ix.keys[slot]], seq)
 		}

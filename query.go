@@ -59,9 +59,9 @@ func (s *Series[T]) Get(ref Ref) (Entry[T], Status) {
 		return e, StatusNotFound
 	case ref.Gen < s.gen:
 		return e, StatusReset
-	case ref.Seq > s.b.newest:
+	case ref.Seq > s.adm.b.newest:
 		return e, StatusNotFound
-	case !s.b.retained(ref.Seq):
+	case !s.adm.b.retained(ref.Seq):
 		return e, StatusExpired
 	}
 	s.copyOut(&e, ref.Seq)
@@ -74,10 +74,10 @@ func (s *Series[T]) Latest() (Entry[T], Status) {
 	defer s.mu.Unlock()
 
 	var e Entry[T]
-	if s.b.empty() {
+	if s.adm.b.empty() {
 		return e, StatusNotFound
 	}
-	s.copyOut(&e, s.b.newest)
+	s.copyOut(&e, s.adm.b.newest)
 	return e, StatusOK
 }
 
@@ -88,10 +88,10 @@ func (s *Series[T]) ReadFrom(dst []Entry[T], from Ref, limit int) ([]Entry[T], R
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	info := ReadInfo{Oldest: s.b.oldestRef(s.gen)}
+	info := ReadInfo{Oldest: s.adm.b.oldestRef(s.gen)}
 	start := from.Seq
 	if from.IsZero() {
-		start = s.b.oldest
+		start = s.adm.b.oldest
 	} else {
 		switch {
 		case from.Gen < s.gen:
@@ -104,16 +104,16 @@ func (s *Series[T]) ReadFrom(dst []Entry[T], from Ref, limit int) ([]Entry[T], R
 	}
 
 	switch {
-	case s.b.empty() && start == 0, start > s.b.newest:
+	case s.adm.b.empty() && start == 0, start > s.adm.b.newest:
 		info.Status = StatusNotFound
 		return dst, info
-	case !s.b.retained(start):
+	case !s.adm.b.retained(start):
 		info.Status = StatusExpired
 		info.Evicted = true
 		return dst, info
 	}
 
-	avail := int(s.b.newest - start + 1)
+	avail := int(s.adm.b.newest - start + 1)
 	n := min(avail, s.effectiveLimit(limit))
 	base := len(dst)
 	dst = growEntries(dst, n)

@@ -128,19 +128,15 @@ func (b bounds) nextSeq() Seq { return b.newest + 1 }
 // is evicted first and returned.
 func (b *bounds) push(capacity int) (evicted Seq, didEvict bool) {
 	s := b.newest + 1
-	switch {
-	case b.empty():
+	if b.empty() {
 		b.oldest = s
-	case b.len() == capacity:
+	} else if s-b.oldest == Seq(capacity) { // full: len == capacity
 		evicted, didEvict = b.oldest, true
 		b.oldest++
 	}
 	b.newest = s
 	return evicted, didEvict
 }
-
-// reset empties the bounds so that the next Seq is 1.
-func (b *bounds) reset() { *b = bounds{} }
 
 // oldestRef and newestRef return the zero Ref when empty.
 func (b bounds) oldestRef(g Gen) Ref {

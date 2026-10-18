@@ -27,14 +27,6 @@ func (e *envelope) add(ts Timestamp) {
 	e.max = max(e.max, ts)
 }
 
-// sourceSeqTracker remembers the highest SourceSeq seen in the current
-// SourceEpoch (§9.2, DECISIONS S2-01).
-type sourceSeqTracker struct {
-	valid bool
-	epoch SourceEpoch
-	last  uint64
-}
-
 // counters are lifetime statistics.
 type counters struct {
 	appended, evicted      uint64
@@ -51,8 +43,8 @@ type Series[T any] struct {
 	cfg  config[T]
 	ring ring[T]
 	time timeIndex // nil when TimeIndexNone
-	idx  []Index[T]
-	b    bounds
+	keys keyIndexes[T]
+	adm  admission // retained bounds, late and SourceSeq trackers
 	gen  Gen
 	id   uint64
 
@@ -60,23 +52,17 @@ type Series[T any] struct {
 	keyScratch []timeKey  // index query results, cap MaxReadBatch+1
 	delKeys    []timeKey  // commit-phase evictions
 	insKeys    []timeKey  // commit-phase insertions
-	xe         Entry[T]   // the entry handed to extractors; zeroed after use
 	plans      []itemPlan // AppendBatch prepare results, by batch position
 	cloned     []T        // AppendBatch CloneOnWrite values; cleared after use
 
-	env         envelope
-	hasObserved bool
-	maxObserved Timestamp // largest accepted EventTime in this generation
-	srcSeq      sourceSeqTracker
-	watermark   Timestamp
-	closed      bool
-	closeErr    error         // returned by operations on the closed Series: ErrClosed or *ClosedError
-	cause       error         // the CloseWithError cause; nil for a clean close
-	wmWait      chan struct{} // closed to wake WaitWatermark callers; nil when none wait
-	n           counters
+	env       envelope
+	watermark Timestamp
+	closed    bool
+	closeErr  error // returned by operations on the closed Series: ErrClosed or *ClosedError
+	cause     error // the CloseWithError cause; nil for a clean close
+	n         counters
 
-	subs        atomic.Pointer[[]*subscriber] // copy-on-write; read without mu by notify
-	dbgNotifies atomic.Uint64                 // notify calls, counted in temporaldebug builds only
+	sig changeSignal // wakes subscriptions and WaitWatermark callers
 }
 
 // New creates a Series. It returns ErrInvalidConfig for a malformed config.
@@ -94,8 +80,17 @@ func New[T any](cfg Config[T]) (*Series[T], error) {
 		}
 	}
 	s := &Series[T]{
-		cfg:       c,
-		ring:      newRing[T](c.capacity),
+		cfg:  c,
+		ring: newRing[T](c.capacity),
+		adm: admission{
+			rules: admissionRules{
+				capacity:        c.capacity,
+				lateTolerance:   c.lateTolerance,
+				latePolicy:      c.latePolicy,
+				sourceSeqPolicy: c.sourceSeqPolicy,
+			},
+			maxObserved: MinTimestamp,
+		},
 		gen:       1,
 		id:        seriesIDs.Add(1),
 		watermark: MinTimestamp,
@@ -107,10 +102,8 @@ func New[T any](cfg Config[T]) (*Series[T], error) {
 		s.insKeys = make([]timeKey, 0, 1)
 	}
 	s.plans = make([]itemPlan, 0, min(c.capacity, 16))
-	s.idx = append([]Index[T](nil), c.indexes...)
-	for _, ix := range s.idx {
-		ix.bind(s, c.capacity)
-	}
+	s.keys = newKeyIndexes(c.indexes)
+	s.keys.bind(s, &s.ring.metaRing, c.capacity)
 	return s, nil
 }
 
@@ -121,7 +114,7 @@ func New[T any](cfg Config[T]) (*Series[T], error) {
 // callbacks run before any mutation and the lock is released on the way out,
 // so a caller that recovers finds the Series unchanged and usable.
 func (s *Series[T]) Append(v T, m InputMeta) (AppendResult, error) {
-	if s.cfg.cloneOnWrite || len(s.idx) > 0 {
+	if s.cfg.cloneOnWrite || !s.keys.none() {
 		return s.appendWithCallbacks(&v, &m)
 	}
 	// No user code runs on this path, so nothing can panic while the lock is
@@ -136,7 +129,7 @@ func (s *Series[T]) Append(v T, m InputMeta) (AppendResult, error) {
 	res, err := s.appendLocked(&v, &m)
 	s.mu.Unlock()
 	if err == nil && res.Outcome == OutcomeAppended {
-		s.notify()
+		s.sig.records()
 	}
 	return res, err
 }
@@ -150,7 +143,7 @@ func (s *Series[T]) appendWithCallbacks(v *T, m *InputMeta) (res AppendResult, e
 	defer func() {
 		s.mu.Unlock()
 		if appended {
-			s.notify()
+			s.sig.records()
 		}
 	}()
 	if s.closed {
@@ -163,29 +156,24 @@ func (s *Series[T]) appendWithCallbacks(v *T, m *InputMeta) (res AppendResult, e
 
 // itemPlan is the outcome of the prepare phase for one item.
 type itemPlan struct {
-	flags       Flags // series-set flags to apply
-	drop        bool  // a ConflictDrop index already maps the key
-	existing    Seq   // holder reported in AppendResult.Existing
-	existingIdx int   // index that produced existing, or -1
+	flags Flags // series-set flags to apply
+	keyPlan
 }
 
 func (s *Series[T]) appendLocked(v *T, m *InputMeta) (AppendResult, error) {
-	next := s.b.nextSeq()
-	p, err := s.prepareMeta(m, s.maxObserved, s.hasObserved, &s.srcSeq, next)
+	flags, err := s.adm.check(m)
 	if err != nil {
 		s.n.rejected++
 		return AppendResult{}, err
 	}
+	p := itemPlan{flags: flags}
 	if s.cfg.cloneOnWrite {
 		c := s.cfg.clone(*v)
 		v = &c
 	}
-	if len(s.idx) > 0 {
-		evictBelow := s.b.oldest
-		if s.b.len() == s.cfg.capacity {
-			evictBelow++
-		}
-		if err := s.prepareIndexes(v, m, &p, next, evictBelow, 0); err != nil {
+	if !s.keys.none() {
+		ref := Ref{Gen: s.gen, Seq: s.adm.nextSeq()}
+		if err := s.keys.prepare(v, m, flags, ref, s.adm.evictBelow(), 0, &p.keyPlan); err != nil {
 			s.n.rejected++
 			return AppendResult{}, err
 		}
@@ -198,58 +186,15 @@ func (s *Series[T]) appendLocked(v *T, m *InputMeta) (AppendResult, error) {
 	return res, nil
 }
 
-// prepareIndexes runs P-03 step 6 for the item at batch position pos: each
-// index in Config.Indexes order extracts the key and checks conflicts. Any
-// error fails the item; otherwise any Drop drops it (Drop wins, §10.3).
-func (s *Series[T]) prepareIndexes(v *T, m *InputMeta, p *itemPlan, seq, evictBelow Seq, pos int) error {
-	e := &s.xe
-	e.Value = *v
-	e.Meta = Meta{
-		EventTime:   m.EventTime,
-		ReceiveTime: m.ReceiveTime,
-		SourceSeq:   m.SourceSeq,
-		SourceEpoch: m.SourceEpoch,
-		Flags:       m.Flags | p.flags,
-		Ref:         Ref{Gen: s.gen, Seq: seq},
-	}
-	defer func() { s.xe = Entry[T]{} }()
-
-	p.existingIdx = -1
-	firstDrop := -1
-	var dropHolder Seq
-	for i, ix := range s.idx {
-		d, err := ix.prepare(e, evictBelow, pos)
-		if err != nil {
-			return err
-		}
-		switch d.kind {
-		case decDrop:
-			if firstDrop < 0 {
-				firstDrop, dropHolder = i, d.existing
-			}
-		case decReplace, decKeepFirst:
-			if p.existingIdx < 0 {
-				p.existingIdx, p.existing = i, d.existing
-			}
-		}
-	}
-	if firstDrop >= 0 {
-		p.drop, p.existingIdx, p.existing = true, firstDrop, dropHolder
-	}
-	return nil
-}
-
 // commitDrop records a dropped item: no Seq is consumed and no index changes.
 func (s *Series[T]) commitDrop(p *itemPlan, pos int) AppendResult {
 	s.n.dropped++
-	for _, ix := range s.idx {
-		ix.noteDropped(pos)
-	}
+	s.keys.drop(pos)
 	return AppendResult{
 		Outcome:  OutcomeDropped,
 		Flags:    p.flags,
 		Existing: Ref{Gen: s.gen, Seq: p.existing},
-		Index:    s.idx[p.existingIdx].indexName(),
+		Index:    s.keys.name(p.by),
 	}
 }
 
@@ -264,62 +209,19 @@ func (s *Series[T]) applyTime() {
 	s.insKeys = s.insKeys[:0]
 }
 
-// prepareMeta runs P-03 steps 1-4 against the given tracker state without
-// mutating anything.
-func (s *Series[T]) prepareMeta(
-	m *InputMeta,
-	maxObserved Timestamp,
-	hasObserved bool,
-	trk *sourceSeqTracker,
-	next Seq,
-) (itemPlan, error) {
-	p := itemPlan{existingIdx: -1}
-	if m.EventTime == MinTimestamp || m.EventTime == MaxTimestamp {
-		return p, errInvalidEventTime
-	}
-	if m.Flags&SeriesFlagsMask != 0 {
-		return p, errSeriesFlags
-	}
-	if hasObserved && m.EventTime < lateThreshold(maxObserved, s.cfg.lateTolerance) {
-		if s.cfg.latePolicy == LateReject {
-			return p, ErrLate
-		}
-		p.flags |= FlagLate
-	}
-	if s.cfg.sourceSeqPolicy != SourceSeqIgnore && m.SourceSeq != 0 &&
-		trk.valid && trk.epoch == m.SourceEpoch && m.SourceSeq <= trk.last {
-		if s.cfg.sourceSeqPolicy == SourceSeqReject {
-			return p, ErrSourceSeqNotIncreasing
-		}
-		p.flags |= FlagSourceSeqNotIncreasing
-	}
-	if next == seqMax {
-		return p, ErrSeqExhausted
-	}
-	return p, nil
-}
-
-// lateThreshold is maxObserved - tolerance, saturating at MinTimestamp (P-10).
-func lateThreshold(maxObserved, tolerance Timestamp) Timestamp {
-	if maxObserved < MinTimestamp+tolerance {
-		return MinTimestamp
-	}
-	return maxObserved - tolerance
-}
-
-// commit applies one prepared item. It must not call user code.
+// commit admits one prepared item (admission push and observe) and stores it. It must not call user code.
 func (s *Series[T]) commit(v *T, m *InputMeta, p itemPlan, pos int) AppendResult {
-	seq := s.b.nextSeq()
+	seq, evicted := s.adm.push()
+	s.adm.observe(m)
 	res := AppendResult{Outcome: OutcomeAppended, Ref: Ref{Gen: s.gen, Seq: seq}, Flags: p.flags}
-	if p.existingIdx >= 0 {
+	if p.by != 0 {
 		res.Existing = Ref{Gen: s.gen, Seq: p.existing}
-		res.Index = s.idx[p.existingIdx].indexName()
+		res.Index = s.keys.name(p.by)
 	}
 
-	if evicted, ok := s.b.push(s.cfg.capacity); ok {
-		slot := s.ring.slot(evicted)
-		for _, ix := range s.idx {
-			ix.evict(slot, evicted)
+	if evicted != 0 {
+		if !s.keys.none() {
+			s.keys.evict(s.ring.slot(evicted), evicted)
 		}
 		et := s.ring.eventTime(evicted)
 		if s.time != nil {
@@ -341,19 +243,8 @@ func (s *Series[T]) commit(v *T, m *InputMeta, p itemPlan, pos int) AppendResult
 	if s.time != nil {
 		s.insKeys = append(s.insKeys, timeKey{eventTime: m.EventTime, seq: seq})
 	}
-	if len(s.idx) > 0 {
-		slot := s.ring.slot(seq)
-		for _, ix := range s.idx {
-			ix.commit(slot, seq, pos)
-		}
-	}
-
-	if !s.hasObserved || m.EventTime > s.maxObserved {
-		s.hasObserved = true
-		s.maxObserved = m.EventTime
-	}
-	if s.cfg.sourceSeqPolicy != SourceSeqIgnore && m.SourceSeq != 0 {
-		s.srcSeq.observe(m.SourceEpoch, m.SourceSeq)
+	if !s.keys.none() {
+		s.keys.commit(s.ring.slot(seq), seq, pos)
 	}
 
 	s.n.appended++
@@ -367,15 +258,6 @@ func (s *Series[T]) commit(v *T, m *InputMeta, p itemPlan, pos int) AppendResult
 		s.n.gapFlags++
 	}
 	return res
-}
-
-// observe records an accepted SourceSeq. A new epoch resets the tracker.
-func (t *sourceSeqTracker) observe(epoch SourceEpoch, seq uint64) {
-	if !t.valid || t.epoch != epoch {
-		*t = sourceSeqTracker{valid: true, epoch: epoch, last: seq}
-		return
-	}
-	t.last = max(t.last, seq)
 }
 
 // Clear removes all records and starts a new generation: Gen increments, the
@@ -397,18 +279,15 @@ func (s *Series[T]) Clear() error {
 	if s.time != nil {
 		s.time.Clear()
 	}
-	for _, ix := range s.idx {
-		ix.reset()
+	if !s.keys.none() {
+		s.keys.reset()
 	}
-	s.b.reset()
+	s.adm.reset()
 	s.env = envelope{}
-	s.hasObserved = false
-	s.maxObserved = 0
-	s.srcSeq = sourceSeqTracker{}
 	s.watermark = MinTimestamp
 	s.n.clears++
 	s.mu.Unlock()
-	s.notify()
+	s.sig.records()
 	return nil
 }
 
@@ -434,12 +313,8 @@ func (s *Series[T]) CloseWithError(cause error) error {
 	if cause != nil {
 		s.closeErr = &ClosedError{Cause: cause}
 	}
-	wake := s.takeWatermarkWaiters()
 	s.mu.Unlock()
-	if wake != nil {
-		close(wake)
-	}
-	s.notify()
+	s.sig.closed()
 	return nil
 }
 
@@ -455,7 +330,7 @@ func (s *Series[T]) Err() error {
 func (s *Series[T]) Len() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.b.len()
+	return s.adm.b.len()
 }
 
 // Cap returns the configured capacity.
@@ -475,12 +350,12 @@ func (s *Series[T]) TimeIndexMode() TimeIndexMode { return s.cfg.timeIndex }
 func (s *Series[T]) OldestRef() Ref {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.b.oldestRef(s.gen)
+	return s.adm.b.oldestRef(s.gen)
 }
 
 // NewestRef returns the newest retained Ref, or the zero Ref when empty.
 func (s *Series[T]) NewestRef() Ref {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.b.newestRef(s.gen)
+	return s.adm.b.newestRef(s.gen)
 }

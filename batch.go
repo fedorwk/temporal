@@ -21,7 +21,7 @@ import "fmt"
 func (s *Series[T]) AppendBatch(dst []AppendResult, items []Input[T]) ([]AppendResult, error) {
 	var appended bool
 	var err error
-	if s.cfg.cloneOnWrite || len(s.idx) > 0 {
+	if s.cfg.cloneOnWrite || !s.keys.none() {
 		dst, appended, err = s.appendBatchWithCallbacks(dst, items)
 	} else {
 		// No user code runs, so nothing can panic under the lock and there is
@@ -31,7 +31,7 @@ func (s *Series[T]) AppendBatch(dst []AppendResult, items []Input[T]) ([]AppendR
 		s.mu.Unlock()
 	}
 	if appended {
-		s.notify()
+		s.sig.records()
 	}
 	return dst, err
 }
@@ -66,9 +66,11 @@ func (s *Series[T]) appendBatchLocked(dst []AppendResult, items []Input[T]) ([]A
 	return dst, appended, nil
 }
 
-// prepareBatch runs the prepare phase for every item against a simulated
-// state, filling s.plans (and s.cloned for CloneOnWrite). It mutates no data
-// state; only diagnostic counters may move (P-04).
+// prepareBatch runs the prepare phase for every item against a copy of the
+// admission state that it advances past each admitted item, exactly as commit
+// will advance the real one, and fills s.plans (and s.cloned for
+// CloneOnWrite). It mutates no data state; only diagnostic counters may move
+// (P-04).
 func (s *Series[T]) prepareBatch(items []Input[T]) error {
 	n := len(items)
 	if cap(s.plans) < n {
@@ -81,68 +83,35 @@ func (s *Series[T]) prepareBatch(items []Input[T]) error {
 		}
 		s.cloned = s.cloned[:n]
 	}
-	if len(s.idx) > 0 {
-		for _, ix := range s.idx {
-			ix.beginBatch()
-		}
-		defer func() {
-			for _, ix := range s.idx {
-				ix.endBatch()
-			}
-		}()
+	if !s.keys.none() {
+		s.keys.beginBatch()
+		defer s.keys.endBatch()
 	}
 
-	// Simulated state: what s would look like after the items so far.
-	next := s.b.nextSeq()
-	oldest, length := s.b.oldest, s.b.len()
-	maxObserved, hasObserved := s.maxObserved, s.hasObserved
-	trk := s.srcSeq
-
+	sim := s.adm
 	for i := range items {
 		m := &items[i].Meta
-		p, err := s.prepareMeta(m, maxObserved, hasObserved, &trk, next)
+		flags, err := sim.check(m)
 		if err != nil {
 			return batchErr(i, err)
 		}
+		p := itemPlan{flags: flags}
 		v := &items[i].Value
 		if s.cfg.cloneOnWrite {
 			s.cloned[i] = s.cfg.clone(*v)
 			v = &s.cloned[i]
 		}
-		if len(s.idx) > 0 {
-			evictBelow := oldest
-			if length == s.cfg.capacity {
-				evictBelow++
-			}
-			if err := s.prepareIndexes(v, m, &p, next, evictBelow, i); err != nil {
+		if !s.keys.none() {
+			ref := Ref{Gen: s.gen, Seq: sim.nextSeq()}
+			if err := s.keys.prepare(v, m, flags, ref, sim.evictBelow(), i, &p.keyPlan); err != nil {
 				return batchErr(i, err)
 			}
-			if !p.drop {
-				for _, ix := range s.idx {
-					ix.stage(i, next)
-				}
-			}
+		}
+		if !p.drop { // a dropped item consumes no Seq and updates no tracker (P-03)
+			sim.push()
+			sim.observe(m)
 		}
 		s.plans[i] = p
-		if p.drop {
-			continue // no Seq, no tracker update (P-03)
-		}
-
-		switch {
-		case length == 0:
-			oldest, length = next, 1
-		case length == s.cfg.capacity:
-			oldest++
-		default:
-			length++
-		}
-		next++
-		if !hasObserved || m.EventTime > maxObserved {
-			maxObserved, hasObserved = m.EventTime, true
-		}
-		if s.cfg.sourceSeqPolicy != SourceSeqIgnore && m.SourceSeq != 0 {
-			trk.observe(m.SourceEpoch, m.SourceSeq)
-		}
 	}
 	return nil
 }

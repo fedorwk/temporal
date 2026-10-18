@@ -48,9 +48,9 @@ func (s *Series[T]) Stats() Stats {
 		Gen:                  s.gen,
 		TimeIndex:            s.cfg.timeIndex,
 		Capacity:             s.cfg.capacity,
-		Len:                  s.b.len(),
-		Oldest:               s.b.oldestRef(s.gen),
-		Newest:               s.b.newestRef(s.gen),
+		Len:                  s.adm.b.len(),
+		Oldest:               s.adm.b.oldestRef(s.gen),
+		Newest:               s.adm.b.newestRef(s.gen),
 		Appended:             s.n.appended,
 		Evicted:              s.n.evicted,
 		Dropped:              s.n.dropped,
@@ -59,21 +59,15 @@ func (s *Series[T]) Stats() Stats {
 		SourceSeqNotIncr:     s.n.sourceSeqNotIncr,
 		GapFlags:             s.n.gapFlags,
 		Clears:               s.n.clears,
-		MaxObservedEventTime: MinTimestamp,
+		MaxObservedEventTime: s.adm.maxObserved,
 		HasEvicted:           s.env.has,
 		MinEvicted:           s.env.min,
 		MaxEvicted:           s.env.max,
 		Watermark:            s.watermark,
-		Subscribers:          s.subscriberCount(),
+		Subscribers:          s.sig.count(),
 	}
-	if s.hasObserved {
-		st.MaxObservedEventTime = s.maxObserved
-	}
-	if len(s.idx) > 0 {
-		st.Indexes = make([]IndexStats, len(s.idx))
-		for i, ix := range s.idx {
-			st.Indexes[i] = ix.stats()
-		}
+	if !s.keys.none() {
+		st.Indexes = s.keys.stats()
 	}
 	if s.time != nil {
 		if k, ok := s.time.Min(); ok {

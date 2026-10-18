@@ -173,7 +173,7 @@ func (s *Series[T]) ContinueValues(dst []T, c TimeCursor, limit int) ([]T, ReadI
 }
 
 func (s *Series[T]) readEntries(dst []Entry[T], p ascendPlan, st Status, limit int) ([]Entry[T], ReadInfo) {
-	info := ReadInfo{Status: st, Oldest: s.b.oldestRef(s.gen)}
+	info := ReadInfo{Status: st, Oldest: s.adm.b.oldestRef(s.gen)}
 	if st != StatusOK {
 		return dst, info
 	}
@@ -182,7 +182,7 @@ func (s *Series[T]) readEntries(dst []Entry[T], p ascendPlan, st Status, limit i
 }
 
 func (s *Series[T]) readValues(dst []T, p ascendPlan, st Status, limit int) ([]T, ReadInfo) {
-	info := ReadInfo{Status: st, Oldest: s.b.oldestRef(s.gen)}
+	info := ReadInfo{Status: st, Oldest: s.adm.b.oldestRef(s.gen)}
 	if st != StatusOK {
 		return dst, info
 	}
@@ -197,7 +197,7 @@ func (s *Series[T]) readValues(dst []T, p ascendPlan, st Status, limit int) ([]T
 func (s *Series[T]) PrevN(dst []Entry[T], ts Timestamp, n int) ([]Entry[T], ReadInfo) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	info := ReadInfo{Oldest: s.b.oldestRef(s.gen)}
+	info := ReadInfo{Oldest: s.adm.b.oldestRef(s.gen)}
 	switch {
 	case s.time == nil:
 		info.Status = StatusTimeIndexDisabled
@@ -232,7 +232,7 @@ func (s *Series[T]) PrevN(dst []Entry[T], ts Timestamp, n int) ([]Entry[T], Read
 func (s *Series[T]) NextN(dst []Entry[T], ts Timestamp, n int) ([]Entry[T], ReadInfo) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	info := ReadInfo{Oldest: s.b.oldestRef(s.gen)}
+	info := ReadInfo{Oldest: s.adm.b.oldestRef(s.gen)}
 	switch {
 	case s.time == nil:
 		info.Status = StatusTimeIndexDisabled

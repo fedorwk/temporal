@@ -396,14 +396,15 @@ func TestSubscription_WakeCoalescing(t *testing.T) {
 }
 
 // W-002, §9.4, §17.3: one notification per committed batch; none for a failed
-// or fully dropped batch. Counted in temporaldebug builds.
+// or fully dropped batch. Counted (changes reported to changeSignal) in
+// temporaldebug builds.
 func TestNotify_OncePerTransaction(t *testing.T) {
 	if !debugAssert {
-		t.Skip("notification counter exists only in temporaldebug builds")
+		t.Skip("change counter exists only in temporaldebug builds")
 	}
 	ix := NewUniqueIndex("id", byID, ConflictDrop)
 	s := mustNew(t, Config[trade]{Capacity: 8, LatePolicy: LateReject, Indexes: []Index[trade]{ix}})
-	count := func() uint64 { return s.dbgNotifies.Load() }
+	count := func() uint64 { return s.sig.dbgFired.Load() }
 	base := count()
 	if _, err := s.AppendBatch(nil, tradeInputs([3]int{1, 0, 1}, [3]int{2, 0, 2}, [3]int{3, 0, 3})); err != nil {
 		t.Fatal(err)

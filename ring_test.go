@@ -83,7 +83,7 @@ func TestRing_SlotFormula(t *testing.T) {
 	}
 }
 
-func TestBounds_EmptyAndReset(t *testing.T) {
+func TestBounds_EmptyAndRefs(t *testing.T) {
 	var b bounds
 	if b.retained(0) || b.retained(1) {
 		t.Fatal("empty bounds retain something")
@@ -98,10 +98,6 @@ func TestBounds_EmptyAndReset(t *testing.T) {
 	}
 	if got := b.newestRef(2); got != (Ref{Gen: 2, Seq: 2}) {
 		t.Fatalf("newestRef = %+v", got)
-	}
-	b.reset()
-	if !b.empty() || b.len() != 0 || b.nextSeq() != 1 {
-		t.Fatalf("after reset %+v", b)
 	}
 }
 

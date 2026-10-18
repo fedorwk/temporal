@@ -40,7 +40,7 @@ Tests per requirement:
 - §21 typed errors: `TestTypedErrors_IsAs`
 - §8.4 cursor shape: `TestTimeCursor_EncodeDecode`
 - §12.1 config validation: `TestConfig_ValidateInvalid`, `TestConfig_ValidateNormalizes` (incl. P-17)
-- §12.1/§12.2 ring and bounds: `TestRing_PushRetainEvict`, `TestRing_SlotFormula`, `TestBounds_EmptyAndReset`, `TestRing_ZeroClearsReferences`, `TestSlotMeta_Size` (P-16)
+- §12.1/§12.2 ring and bounds: `TestRing_PushRetainEvict`, `TestRing_SlotFormula`, `TestBounds_EmptyAndRefs`, `TestRing_ZeroClearsReferences`, `TestSlotMeta_Size` (P-16)
 
 Open questions: none.
 

@@ -262,7 +262,7 @@ func TestIndex_ExtractorPanicNoStateChange(t *testing.T) {
 	if syms.Count("BTC") != 2 {
 		t.Fatal("multi index changed")
 	}
-	if s.xe != (Entry[trade]{}) {
+	if *s.keys.xe != (Entry[trade]{}) {
 		t.Fatal("extractor scratch entry not cleared")
 	}
 	mustInvariants(t, s)

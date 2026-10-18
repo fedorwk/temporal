@@ -4,8 +4,6 @@ import (
 	"context"
 	"fmt"
 	"iter"
-	"slices"
-	"sync"
 )
 
 type startKind uint8
@@ -45,14 +43,6 @@ type SubscribeOptions struct {
 	// returned and no record is pending. Derive loops use it to forward
 	// completeness that arrives after the last record.
 	WatermarkUpdates bool
-}
-
-// subscriber is the notification endpoint shared with the Series.
-type subscriber struct {
-	wake      chan struct{} // buffer 1: coalesced wake-ups
-	done      chan struct{} // closed by Subscription.Close
-	wmUpdates bool          // woken by SetWatermark; immutable
-	closeOnce sync.Once
 }
 
 // Subscription reads a Series in Seq order. It must be used by one goroutine
@@ -96,12 +86,7 @@ func (s *Series[T]) Subscribe(opts SubscribeOptions) (*Subscription[T], error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	sub.cur = s.startCursor(opts.Start)
-	var list []*subscriber
-	if p := s.subs.Load(); p != nil {
-		list = slices.Clone(*p)
-	}
-	list = append(list, sub.sub)
-	s.subs.Store(&list)
+	s.sig.add(sub.sub)
 	return sub, nil
 }
 
@@ -110,10 +95,10 @@ func (s *Series[T]) startCursor(from StartFrom) Cursor {
 	switch {
 	case from.kind == startAt && !from.ref.IsZero():
 		return Cursor{Gen: from.ref.Gen, Next: from.ref.Seq}
-	case from.kind == startNext || s.b.empty():
-		return Cursor{Gen: s.gen, Next: s.b.nextSeq()}
+	case from.kind == startNext || s.adm.b.empty():
+		return Cursor{Gen: s.gen, Next: s.adm.b.nextSeq()}
 	default: // StartOldest, or StartAt with the zero Ref
-		return Cursor{Gen: s.gen, Next: s.b.oldest}
+		return Cursor{Gen: s.gen, Next: s.adm.b.oldest}
 	}
 }
 
@@ -121,56 +106,7 @@ func (s *Series[T]) startCursor(from StartFrom) Cursor {
 func (s *Series[T]) unsubscribe(sub *subscriber) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	p := s.subs.Load()
-	if p == nil {
-		return
-	}
-	list := slices.DeleteFunc(slices.Clone(*p), func(x *subscriber) bool { return x == sub })
-	s.subs.Store(&list)
-}
-
-// notify wakes every subscriber without blocking. It is called after the
-// mutex is released; a full wake buffer means a wake-up is already pending.
-func (s *Series[T]) notify() {
-	if debugAssert {
-		s.dbgNotifies.Add(1)
-	}
-	p := s.subs.Load()
-	if p == nil {
-		return
-	}
-	for _, sub := range *p {
-		select {
-		case sub.wake <- struct{}{}:
-		default:
-		}
-	}
-}
-
-// notifyWatermark wakes the subscribers that follow the watermark. Like
-// notify it is called after the mutex is released and never blocks.
-func (s *Series[T]) notifyWatermark() {
-	p := s.subs.Load()
-	if p == nil {
-		return
-	}
-	for _, sub := range *p {
-		if !sub.wmUpdates {
-			continue
-		}
-		select {
-		case sub.wake <- struct{}{}:
-		default:
-		}
-	}
-}
-
-// subscriberCount returns the number of open subscriptions.
-func (s *Series[T]) subscriberCount() int {
-	if p := s.subs.Load(); p != nil {
-		return len(*p)
-	}
-	return 0
+	s.sig.remove(sub)
 }
 
 func (sub *Subscription[T]) closed() bool {
@@ -192,12 +128,9 @@ func (sub *Subscription[T]) poll(dst []Entry[T], limit int) ([]Entry[T], SourceS
 	defer s.mu.Unlock()
 	snap := SourceState{
 		Gen:                  s.gen,
-		Newest:               s.b.newestRef(s.gen),
+		Newest:               s.adm.b.newestRef(s.gen),
 		Watermark:            s.watermark,
-		MaxObservedEventTime: MinTimestamp,
-	}
-	if s.hasObserved {
-		snap.MaxObservedEventTime = s.maxObserved
+		MaxObservedEventTime: s.adm.maxObserved,
 	}
 	switch {
 	case sub.closed():
@@ -208,21 +141,21 @@ func (sub *Subscription[T]) poll(dst []Entry[T], limit int) ([]Entry[T], SourceS
 		return dst, snap, false, fmt.Errorf("%w: subscription cursor from a later generation", ErrInvalidInput)
 	}
 
-	next := min(sub.cur.Next, s.b.nextSeq()) // clamps StartAt beyond Newest+1
+	next := min(sub.cur.Next, s.adm.b.nextSeq()) // clamps StartAt beyond Newest+1
 	var skip uint64
-	if !s.b.empty() && next < s.b.oldest {
-		missed := uint64(s.b.oldest - next)
+	if !s.adm.b.empty() && next < s.adm.b.oldest {
+		missed := uint64(s.adm.b.oldest - next)
 		if sub.onLag == LagFail {
 			return dst, snap, false, &LagError{
 				Cursor: sub.cur,
-				Oldest: Ref{Gen: s.gen, Seq: s.b.oldest},
+				Oldest: Ref{Gen: s.gen, Seq: s.adm.b.oldest},
 				Missed: missed,
 			}
 		}
-		skip, next = missed, s.b.oldest
+		skip, next = missed, s.adm.b.oldest
 	}
-	if !s.b.empty() && next <= s.b.newest {
-		n := min(int(s.b.newest-next+1), s.effectiveLimit(limit))
+	if !s.adm.b.empty() && next <= s.adm.b.newest {
+		n := min(int(s.adm.b.newest-next+1), s.effectiveLimit(limit))
 		base := len(dst)
 		dst = growEntries(dst, n)
 		for i := range n {
