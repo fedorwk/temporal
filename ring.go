@@ -31,14 +31,16 @@ type ring[T any] struct {
 }
 
 func newRing[T any](capacity int) ring[T] {
+	return ring[T]{values: make([]T, capacity), metaRing: newMetaRing(capacity)}
+}
+
+// newMetaRing returns the slot map and metadata for capacity slots.
+func newMetaRing(capacity int) metaRing {
 	n := uint64(capacity)
-	r := ring[T]{
-		values: make([]T, capacity),
-		metaRing: metaRing{
-			metas: make([]slotMeta, capacity),
-			n:     n,
-			pow2:  n&(n-1) == 0,
-		},
+	r := metaRing{
+		metas: make([]slotMeta, capacity),
+		n:     n,
+		pow2:  n&(n-1) == 0,
 	}
 	if r.pow2 {
 		r.mask = n - 1

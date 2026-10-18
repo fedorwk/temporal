@@ -158,10 +158,10 @@ func (x *keyIndexes[T]) stats() []IndexStats {
 	return st
 }
 
-// check verifies every index's invariants.
-func (x *keyIndexes[T]) check() error {
+// check verifies every index's invariants for the retained rows b.
+func (x *keyIndexes[T]) check(b bounds) error {
 	for _, ix := range x.list {
-		if err := ix.checkLocked(); err != nil {
+		if err := ix.checkLocked(b); err != nil {
 			return err
 		}
 	}

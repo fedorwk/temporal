@@ -94,7 +94,7 @@ Each phase-5 feature (WaitWatermark, WatermarkUpdates, CloseWithError) had to ed
 
 **Strength:** Worth exploring · in-process
 
-**Status:** Done, see DECISIONS S13-03. `key_index_set.go` holds `keyIndexes[T]` (`prepare`, `beginBatch`/`endBatch`, `commit`, `drop`, `evict`, `reset`); the batch overlay moved from `Index[T]` to the internal `conflictIndex` that only `UniqueIndex` implements, and the set is tested without a Series. The Series calls 7 write-protocol methods rather than four; S13-03 says why.
+**Status:** Done, see DECISIONS S13-03. `key_index_set.go` holds `keyIndexes[T]` (`prepare`, `beginBatch`/`endBatch`, `commit`, `drop`, `evict`, `reset`); the batch overlay moved from `Index[T]` to the internal `conflictIndex` that only `UniqueIndex` implements, and the set, including its invariant check, is tested without a Series. The Series calls 7 write-protocol methods rather than four; S13-03 says why.
 
 **Files:** `key_index.go` (`Index[T]`), `series.go` (`prepareIndexes`, `commitDrop`, `commit`), `batch.go` (`prepareBatch`)
 

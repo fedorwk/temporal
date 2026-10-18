@@ -366,6 +366,6 @@ Done:
 Tests:
 - Admission: `TestAdmission_Check`, `TestAdmission_BoundsAndEviction`, `TestAdmission_SeqExhausted`, `TestAdmission_CopyIsIndependent`; `TestBounds_EmptyAndReset` became `TestBounds_EmptyAndRefs`.
 - Change signal: `TestChangeSignal_WhoWakes`, `TestChangeSignal_Coalesces`, `TestChangeSignal_WatermarkWaitChannel`, `TestChangeSignal_AddRemove`.
-- Key-index set: `TestKeyIndexes_Precedence`, `TestKeyIndexes_RejectFailsTheItem`, `TestKeyIndexes_EvictBelowFreesKeys`, `TestKeyIndexes_BatchOverlay`, `TestKeyIndexes_DropCountsTheDecidingIndexes`, `TestKeyIndexes_CommitEvictReset`, `TestKeyIndexes_None`.
+- Key-index set: `TestKeyIndexes_Precedence`, `TestKeyIndexes_RejectFailsTheItem`, `TestKeyIndexes_EvictBelowFreesKeys`, `TestKeyIndexes_BatchOverlay`, `TestKeyIndexes_DropCountsTheDecidingIndexes`, `TestKeyIndexes_CommitEvictReset`, `TestKeyIndexes_Check`, `TestKeyIndexes_None`.
 - Read step: `TestSubscription_Read`, `TestSubscription_TryRead`, `TestUpdate_WatermarkAdvancedOnce`, `TestUpdate_WatermarkAdvancedWithoutUpdates`, `TestUpdate_RecordsAppended`, `TestUpdate_ZeroOnError`, `ExampleSubscription_Read`, `ExampleSubscription_TryRead`.
 - The model, fuzz and allocation tests are unchanged and stay the oracle; benchmarks per step are recorded in the S13 rows of `DECISIONS.md`.

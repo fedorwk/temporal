@@ -15,7 +15,7 @@ type orderedHarness struct {
 }
 
 func newOrderedHarness(capacity int) *orderedHarness {
-	r := newRing[struct{}](capacity).metaRing
+	r := newMetaRing(capacity)
 	h := &orderedHarness{ring: &r}
 	h.orderedTimeIndex = newOrderedTimeIndex(h.ring)
 	return h

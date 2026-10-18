@@ -36,7 +36,7 @@ type Index[T any] interface {
 	evict(slot int, seq Seq)
 	reset()
 	stats() IndexStats
-	checkLocked() error
+	checkLocked(b bounds) error
 }
 
 // decisionKind is the prepared outcome of one item for one index.
@@ -73,8 +73,8 @@ func (b bitset) clearAll()      { clear(b) }
 type keyCore[T any, K comparable] struct {
 	name    string
 	fn      Extractor[T, K]
-	s       *Series[T] // for lookups and checkLocked; nil until bound
-	slots   *metaRing  // Seq to slot, for the write path
+	s       *Series[T] // for lookups; nil until bound
+	slots   *metaRing  // Seq to slot, for the write path and checkLocked
 	keys    []K        // per slot: the key stored at commit
 	indexed bitset     // per slot: the row is entered in this index
 	pkeys   []K        // per batch position: extracted key
@@ -326,12 +326,12 @@ func (ix *UniqueIndex[T, K]) Len() int {
 	return len(ix.m)
 }
 
-// checkLocked verifies the §14.1 unique-index invariants.
-func (ix *UniqueIndex[T, K]) checkLocked() error {
-	s := ix.s
+// checkLocked verifies the §14.1 unique-index invariants for the retained rows
+// b.
+func (ix *UniqueIndex[T, K]) checkLocked(b bounds) error {
 	want := 0
-	for seq := s.adm.b.oldest; !s.adm.b.empty() && seq <= s.adm.b.newest; seq++ {
-		slot := s.ring.slot(seq)
+	for seq := b.oldest; !b.empty() && seq <= b.newest; seq++ {
+		slot := ix.slots.slot(seq)
 		if !ix.indexed.get(slot) {
 			continue
 		}
@@ -344,20 +344,21 @@ func (ix *UniqueIndex[T, K]) checkLocked() error {
 	if len(ix.m) != want {
 		return fmt.Errorf("unique %q: %d mappings, %d indexed retained rows", ix.name, len(ix.m), want)
 	}
-	if n := countUnretainedIndexed(s, ix.indexed); n > 0 {
+	if n := countUnretainedIndexed(ix.slots, b, ix.indexed); n > 0 {
 		return fmt.Errorf("unique %q: %d non-retained slots marked indexed", ix.name, n)
 	}
 	return nil
 }
 
-// countUnretainedIndexed counts indexed bits on slots that hold no retained row.
-func countUnretainedIndexed[T any](s *Series[T], indexed bitset) int {
-	retained := newBitset(s.cfg.capacity)
-	for seq := s.adm.b.oldest; !s.adm.b.empty() && seq <= s.adm.b.newest; seq++ {
-		retained.set(s.ring.slot(seq))
+// countUnretainedIndexed counts indexed bits on slots that hold no row of b.
+func countUnretainedIndexed(slots *metaRing, b bounds, indexed bitset) int {
+	capacity := int(slots.n)
+	retained := newBitset(capacity)
+	for seq := b.oldest; !b.empty() && seq <= b.newest; seq++ {
+		retained.set(slots.slot(seq))
 	}
 	n := 0
-	for slot := range s.cfg.capacity {
+	for slot := range capacity {
 		if indexed.get(slot) && !retained.get(slot) {
 			n++
 		}
@@ -548,12 +549,12 @@ func (ix *MultiIndex[T, K]) Keys() int {
 	return len(ix.m)
 }
 
-// checkLocked verifies the §14.1 multi-index invariants.
-func (ix *MultiIndex[T, K]) checkLocked() error {
-	s := ix.s
+// checkLocked verifies the §14.1 multi-index invariants for the retained rows
+// b.
+func (ix *MultiIndex[T, K]) checkLocked(b bounds) error {
 	want := map[K][]Seq{}
-	for seq := s.adm.b.oldest; !s.adm.b.empty() && seq <= s.adm.b.newest; seq++ {
-		if slot := s.ring.slot(seq); ix.indexed.get(slot) {
+	for seq := b.oldest; !b.empty() && seq <= b.newest; seq++ {
+		if slot := ix.slots.slot(seq); ix.indexed.get(slot) {
 			want[ix.keys[slot]] = append(want[ix.keys[slot]], seq)
 		}
 	}
@@ -575,7 +576,7 @@ func (ix *MultiIndex[T, K]) checkLocked() error {
 			}
 		}
 	}
-	if n := countUnretainedIndexed(s, ix.indexed); n > 0 {
+	if n := countUnretainedIndexed(ix.slots, b, ix.indexed); n > 0 {
 		return fmt.Errorf("multi %q: %d non-retained slots marked indexed", ix.name, n)
 	}
 	return nil
